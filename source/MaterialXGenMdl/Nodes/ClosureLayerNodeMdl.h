@@ -25,6 +25,9 @@ class MX_GENMDL_API StringConstantsMdl
     static const string BASE; ///< layer parameter name of the base component
     static const string FG;   ///< parameter of the mix node
     static const string BG;   ///< parameter of the mix node
+    static const string MIX;  ///< mix parameter name of the amount
+    static const string TOP_WEIGHT; ///< mix amount forwarded into layer top component
+    
     static const string IN1;  ///< parameter of the add and multiply nodes
     static const string IN2;  ///< parameter of the add and multiply nodes
 
@@ -100,11 +103,14 @@ class MX_GENMDL_API ClosureLayerNodeMdl : public CarryThinFilmParameters<ShaderN
 /// Note, not all elemental bsdfs support this kind of transformation.
 class MX_GENMDL_API LayerableNodeMdl : public SourceCodeNodeMdl
 {
+    using BASE = SourceCodeNodeMdl;
+
   public:
     virtual ~LayerableNodeMdl() = default;
     static ShaderNodeImplPtr create();
 
     void addInputs(ShaderNode& node, GenContext&) const override;
+    bool isEditable(const ShaderInput& input) const override;
 };
 
 /// Used for elemental nodes that can consume thin film.

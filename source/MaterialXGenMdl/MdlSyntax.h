@@ -55,6 +55,8 @@ class MX_GENMDL_API MdlSyntax : public Syntax
     static const StringVec FILTERTYPE_MEMBERS;
     static const StringVec DISTRIBUTIONTYPE_MEMBERS;
     static const StringVec SCATTER_MODE_MEMBERS;
+    static const StringVec SHEEN_MODE_MEMBERS;
+    static const string PORT_NAME_PREFIX; // Applied to input and output names to avoid collisions with reserved words in MDL
 
     /// Get an type description for an enumeration based on member value
     const TypeDesc* getEnumeratedType(const string& value) const;
@@ -65,6 +67,16 @@ class MX_GENMDL_API MdlSyntax : public Syntax
 
     /// Modify the given name string to remove any invalid characters or tokens.
     void makeValidName(string& name) const override;
+
+    /// To avoid collisions with reserved names in MDL, input and output names are prefixed.
+    string modifyPortName(const string& word) const;
+
+    /// Replaces all markers in a source code string indicated by {{...}}.
+    /// The replacement is defined by a callback function.
+    string replaceSourceCodeMarkers(const string& nodeName, const string& soureCode, std::function<string(const string&)> lambda, bool removeParam = false) const;
+
+    /// Get the MDL language versing marker: {{MDL_VERSION_SUFFIX}}.
+    const string getMdlVersionSuffixMarker() const;
 };
 
 namespace Type
@@ -75,6 +87,8 @@ extern MX_GENMDL_API const TypeDesc* MDL_COORDINATESPACE;
 extern MX_GENMDL_API const TypeDesc* MDL_FILTERLOOKUPMODE;
 extern MX_GENMDL_API const TypeDesc* MDL_FILTERTYPE;
 extern MX_GENMDL_API const TypeDesc* MDL_DISTRIBUTIONTYPE;
+extern MX_GENMDL_API const TypeDesc* MDL_SCATTER_MODE;
+extern MX_GENMDL_API const TypeDesc* MDL_SHEEN_MODE;
 
 } // namespace Type
 

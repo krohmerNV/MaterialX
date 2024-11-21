@@ -26,6 +26,10 @@ class MX_GENMDL_API SourceCodeNodeMdl : public SourceCodeNode
 
   protected:
     string _returnStruct;
+
+private:
+    void resolveSourceCode(const InterfaceElement& element, GenContext& context);
+    void base_initialize(const InterfaceElement& element, GenContext& context);
 };
 
 MATERIALX_NAMESPACE_END

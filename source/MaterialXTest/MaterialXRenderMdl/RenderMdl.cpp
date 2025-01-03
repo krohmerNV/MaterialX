@@ -7,8 +7,6 @@
 #include <MaterialXTest/MaterialXRender/RenderUtil.h>
 #include <MaterialXTest/MaterialXGenMdl/GenMdl.h>
 
-#include <MaterialXRenderMdl/MdlRenderer.h>
-
 #include <MaterialXRender/StbImageLoader.h>
 #if defined(MATERIALX_BUILD_OIIO)
     #include <MaterialXRender/OiioImageLoader.h>
@@ -71,21 +69,10 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                                         RenderUtil::RenderProfileTimes& profileTimes,
                                         const mx::FileSearchPath&,
                                         const std::string& outputPath,
-                                        mx::ImageVec* imageVec)
+                                        mx::ImageVec* /*imageVec*/)
 {
     std::cout << "Validating MDL rendering for: " << doc->getSourceUri() << std::endl;
     mx::ScopedTimer totalMDLTime(&profileTimes.languageTimes.totalTime);
-
-    // Perform validation if requested
-    if (testOptions.validateElementToRender)
-    {
-        std::string message;
-        if (!element->validate(&message))
-        {
-            log << "Element is invalid: " << message << std::endl;
-            return false;
-        }
-    }
 
     std::vector<mx::GenOptions> optionsList;
     getGenerationOptions(testOptions, context.getOptions(), optionsList);

@@ -244,8 +244,15 @@ if (MATERIALX_BUILD_BENCHMARK_TESTS)
     add_definitions(-DMATERIALX_BUILD_BENCHMARK_TESTS)
 endif()
 
-if (MATERIALX_BUILD_GEN_MDL)
+# GEN MDL does not have any additional dependencies. For loading and compiling MDL, e.g., in the test renderer, the MDL SDK is needed.
+if (MATERIALX_BUILD_GEN_MDL AND MATERIALX_TEST_RENDER)
+
+    # TODO remove the listing of imported targets
+    # get_property(importTargets DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
     find_package(MDL QUIET REQUIRED PATHS ${MATERIALX_MDL_DIR})
+    # get_property(importTargetsAfter DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
+    # list(REMOVE_ITEM importTargetsAfter ${importTargets})
+    # message("${importTargetsAfter}")
 
     if(NOT MATERIALX_MDL_COMPILER_EXECUTABLE)
         get_target_property(MATERIALX_MDL_COMPILER_EXECUTABLE mdl::mdlc LOCATION)

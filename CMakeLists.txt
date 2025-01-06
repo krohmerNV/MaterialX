@@ -31,6 +31,20 @@ if (MATERIALX_BUILD_JS)
     endif()
 endif()
 
+# VCPKG setup
+set(VCPKG_MANIFEST_MODE ON)
+set(CMAKE_TOOLCHAIN_FILE ${CMAKE_SOURCE_DIR}/source/External/vcpkg/scripts/buildsystems/vcpkg.cmake)
+
+# optional dependencies
+option(MATERIALX_BUILD_MDL_COMPILER "Build the MDL SDK dependency to be used in [genmdl] tests." OFF)
+if(MATERIALX_BUILD_MDL_COMPILER)
+    list(APPEND VCPKG_MANIFEST_FEATURES "mdl-compiler")
+endif()
+option(MATERIALX_BUILD_MDL_RENDER "Build the MDL SDK dependency and a renderer application to be used in [rendermdl] tests." OFF)
+if(MATERIALX_BUILD_MDL_RENDER)
+    list(APPEND VCPKG_MANIFEST_FEATURES "mdl-render")
+endif()
+
 project(MaterialX VERSION ${MATERIALX_LIBRARY_VERSION})
 
 option(MATERIALX_BUILD_PYTHON "Build the MaterialX Python package from C++ bindings. Requires Python 3.6 or greater." OFF)
@@ -198,6 +212,8 @@ mark_as_advanced(MATERIALX_EMSDK_PATH)
 mark_as_advanced(MATERIALX_BUILD_IOS)
 mark_as_advanced(MATERIALX_BUILD_APPLE_FRAMEWORK)
 mark_as_advanced(MATERIALX_MDL_DIR)
+mark_as_advanced(MATERIALX_BUILD_MDL_COMPILER)
+mark_as_advanced(MATERIALX_BUILD_MDL_RENDER)
 mark_as_advanced(MATERIALX_MDL_COMPILER_EXECUTABLE)
 mark_as_advanced(MATERIALX_MDL_RENDER_EXECUTABLE)
 if (MATERIALX_BUILD_GEN_MDL)
@@ -245,25 +261,20 @@ if (MATERIALX_BUILD_BENCHMARK_TESTS)
 endif()
 
 # GEN MDL does not have any additional dependencies. For loading and compiling MDL, e.g., in the test renderer, the MDL SDK is needed.
-if (MATERIALX_BUILD_GEN_MDL AND MATERIALX_TEST_RENDER)
-
-    # TODO remove the listing of imported targets
-    get_property(importTargets DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
-    find_package(MDL QUIET REQUIRED PATHS ${MATERIALX_MDL_DIR})
-    find_package(glfw3 QUIET REQUIRED)
-    find_package(VulkanHeaders QUIET REQUIRED)
-    find_package(glslang QUIET REQUIRED)
-    find_package(volk QUIET REQUIRED)
-    find_package(spirv-tools QUIET REQUIRED)
-    get_property(importTargetsAfter DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
-    list(REMOVE_ITEM importTargetsAfter ${importTargets})
-    message("${importTargetsAfter}")
-
-    if(NOT MATERIALX_MDL_COMPILER_EXECUTABLE)
+if (MATERIALX_BUILD_GEN_MDL)
+    if((EXISTS ${MATERIALX_MDL_DIR}) OR MATERIALX_BUILD_MDL_COMPILER OR MATERIALX_BUILD_MDL_RENDER)
+        find_package(MDL QUIET REQUIRED PATHS ${MATERIALX_MDL_DIR})
         get_target_property(MATERIALX_MDL_COMPILER_EXECUTABLE mdl::mdlc LOCATION)
         set(MATERIALX_MDL_COMPILER_EXECUTABLE ${MATERIALX_MDL_COMPILER_EXECUTABLE} CACHE FILEPATH "Full path to the mdlc binary." FORCE)
     endif()
-        
+
+    # TODO remove the listing of imported targets
+    # get_property(importTargets DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
+    # find_package(...)
+    # get_property(importTargetsAfter DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY IMPORTED_TARGETS)
+    # list(REMOVE_ITEM importTargetsAfter ${importTargets})
+    # message("${importTargetsAfter}")
+
     add_definitions(-DMATERIALX_MDL_COMPILER_EXECUTABLE=\"${MATERIALX_MDL_COMPILER_EXECUTABLE}\")
     add_definitions(-DMATERIALX_MDL_RENDER_EXECUTABLE=\"${MATERIALX_MDL_RENDER_EXECUTABLE}\")
     add_definitions(-DMATERIALX_MDL_RENDER_ARGUMENTS=\"${MATERIALX_MDL_RENDER_ARGUMENTS}\")
@@ -509,7 +520,7 @@ if(MATERIALX_BUILD_RENDER)
         if(MATERIALX_BUILD_GEN_OSL)
             add_subdirectory(source/MaterialXRenderOsl)
         endif()
-        if(MATERIALX_BUILD_GEN_MDL AND MATERIALX_TEST_RENDER)
+        if(MATERIALX_BUILD_GEN_MDL AND MATERIALX_BUILD_MDL_RENDER)
             add_subdirectory(source/MaterialXRenderMdl)
         endif()
     endif()

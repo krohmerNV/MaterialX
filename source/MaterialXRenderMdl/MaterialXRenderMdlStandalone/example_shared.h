@@ -62,14 +62,6 @@ inline void exit_failure_(
         fprintf(stderr, "Fatal error in file: %s line: %d\n  %s\n\nClosing the example.\n", 
             file, line, message.c_str());
 
-    // keep console open
-    #ifdef MI_PLATFORM_WINDOWS
-        if (IsDebuggerPresent()) {
-            fprintf(stderr, "Press enter to continue . . . \n");
-            fgetc(stdin);
-        }
-    #endif
-
     // kill the application
     exit(EXIT_FAILURE);
 }
@@ -91,13 +83,6 @@ inline void exit_failure_(const char* file, int line)
 /// use like this: 'return exit_success()'
 inline void exit_success_()
 {
-    // keep console open
-    #ifdef MI_PLATFORM_WINDOWS
-        if (IsDebuggerPresent()) {
-            fprintf(stderr, "\nPress enter to continue . . . \n");
-            fgetc(stdin);
-        }
-    #endif
     exit(EXIT_SUCCESS);
 }
 
@@ -119,14 +104,8 @@ inline void print_message(
     const char* msg)
 {
     std::string s_kind = mi::examples::strings::to_string(kind);
-
-    if (mi::examples::mdl::g_logger) {
-        mi::examples::mdl::g_logger->message(severity, s_kind.c_str(), msg);
-    } else {
-        std::string s_severity = mi::examples::strings::to_string(severity);
-
-        fprintf(stderr, "%s: %s %s\n", s_severity.c_str(), s_kind.c_str(), msg);
-    }
+    std::string s_severity = mi::examples::strings::to_string(severity);
+    fprintf(stderr, "%s: %s %s\n", s_severity.c_str(), s_kind.c_str(), msg);
 }
 
 /// Prints the messages of the given context.

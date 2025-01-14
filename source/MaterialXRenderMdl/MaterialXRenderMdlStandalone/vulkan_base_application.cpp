@@ -26,11 +26,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *****************************************************************************/
 
-// examples/mdl_sdk/shared/example_vulkan_shared.cpp
-//
-// Code shared by all Vulkan examples.
-
-#include "example_vulkan_shared.h"
+#include "vulkan_base_application.h"
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -41,6 +37,9 @@
 
 #include <unordered_set>
 #include <algorithm>
+#include <numeric>
+#define _USE_MATH_DEFINES
+#include <math.h>
 
 namespace
 {
@@ -179,7 +178,7 @@ std::vector<unsigned int> Glsl_compiler::link_program(bool optimize)
 }
 
 glslang::TShader::Includer::IncludeResult* Glsl_compiler::Simple_file_includer::includeSystem(
-    const char* header_name, const char* includer_name, size_t inclusion_depth)
+    const char* /*header_name*/, const char* /*includer_name*/, size_t /*inclusion_depth*/)
 {
     // Not supported
     return nullptr;
@@ -2524,6 +2523,235 @@ const char* vkformat_to_str(VkFormat format)
     default:
         return "Unknown Format";
     }
+}
+
+Vulkan_buffer create_storage_buffer(
+    VkDevice device,
+    VkPhysicalDevice physical_device,
+    VkQueue queue,
+    VkCommandPool command_pool,
+    const void* buffer_data,
+    mi::Size buffer_size)
+{
+    Vulkan_buffer storage_buffer;
+
+    { // Create the storage buffer in device local memory (VRAM)
+        VkBufferCreateInfo buffer_create_info = {};
+        buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_create_info.size = buffer_size;
+        buffer_create_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        VK_CHECK(vkCreateBuffer(
+            device, &buffer_create_info, nullptr, &storage_buffer.buffer));
+
+        // Allocate device memory for the buffer.
+        storage_buffer.device_memory = mi::examples::vk::allocate_and_bind_buffer_memory(
+            device, physical_device, storage_buffer.buffer,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
+
+    {
+        mi::examples::vk::Staging_buffer staging_buffer(
+            device, physical_device, buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+        // Memcpy the data into the staging buffer
+        void* mapped_data = staging_buffer.map_memory();
+        std::memcpy(mapped_data, buffer_data, buffer_size);
+        staging_buffer.unmap_memory();
+
+        // Upload the data from the staging buffer into the storage buffer
+        mi::examples::vk::Temporary_command_buffer command_buffer(device, command_pool);
+        command_buffer.begin();
+
+        VkBufferCopy copy_region = {};
+        copy_region.size = buffer_size;
+
+        vkCmdCopyBuffer(command_buffer.get(),
+                        staging_buffer.get(), storage_buffer.buffer, 1, &copy_region);
+
+        command_buffer.end_and_submit(queue);
+    }
+
+    return storage_buffer;
+}
+
+void Vulkan_environment_map::create(
+    VkDevice device, VkPhysicalDevice physical_device, VkCommandPool command_pool, VkQueue graphics_queue,
+    mi::neuraylib::IImage_api* image_api, mi::neuraylib::ITransaction* transaction,
+    const std::string& filePath)
+{
+    mi::base::Handle<mi::neuraylib::IImage> image(
+        transaction->create<mi::neuraylib::IImage>("Image"));
+
+    check_success(image->reset_file(filePath.c_str()) == 0);
+
+    mi::base::Handle<const mi::neuraylib::ICanvas> canvas(image->get_canvas(0, 0, 0));
+    const mi::Uint32 res_x = canvas->get_resolution_x();
+    const mi::Uint32 res_y = canvas->get_resolution_y();
+
+    // Check, whether we need to convert the image
+    char const* image_type = image->get_type(0, 0);
+    if (strcmp(image_type, "Color") != 0 && strcmp(image_type, "Float32<4>") != 0)
+        canvas = image_api->convert(canvas.get(), "Color");
+
+    // Create the Vulkan texture
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    image_create_info.extent = { res_x, res_y, 1 };
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VK_CHECK(vkCreateImage(device, &image_create_info, nullptr, &texture.image));
+
+    texture.device_memory = mi::examples::vk::allocate_and_bind_image_memory(
+        device, physical_device, texture.image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkImageViewCreateInfo image_view_create_info = {};
+    image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    image_view_create_info.image = texture.image;
+    image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    image_view_create_info.format = image_create_info.format;
+    image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_view_create_info.subresourceRange.baseMipLevel = 0;
+    image_view_create_info.subresourceRange.levelCount = 1;
+    image_view_create_info.subresourceRange.baseArrayLayer = 0;
+    image_view_create_info.subresourceRange.layerCount = 1;
+
+    VK_CHECK(vkCreateImageView(device, &image_view_create_info, nullptr, &texture.image_view));
+
+    {                                                                   // Upload image data to the GPU
+        size_t staging_buffer_size = res_x * res_y * sizeof(float) * 4; // RGBA32F
+        mi::examples::vk::Staging_buffer staging_buffer(device, physical_device,
+                                                        staging_buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+        // Memcpy the read-only data into the staging buffer
+        mi::base::Handle<const mi::neuraylib::ITile> tile(canvas->get_tile());
+        void* mapped_data = staging_buffer.map_memory();
+        std::memcpy(mapped_data, tile->get_data(), staging_buffer_size);
+        staging_buffer.unmap_memory();
+
+        // Upload the read-only data from the staging buffer into the storage buffer
+        mi::examples::vk::Temporary_command_buffer command_buffer(device, command_pool);
+        command_buffer.begin();
+
+        mi::examples::vk::transitionImageLayout(command_buffer.get(),
+                                                /*image=*/texture.image,
+                                                /*src_access_mask=*/0,
+                                                /*dst_access_mask=*/VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                /*old_layout=*/VK_IMAGE_LAYOUT_UNDEFINED,
+                                                /*new_layout=*/VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                /*src_stage_mask=*/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                                /*dst_stage_mask=*/VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+        VkBufferImageCopy copy_region = {};
+        copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy_region.imageSubresource.layerCount = 1;
+        copy_region.imageExtent = { res_x, res_y, 1 };
+
+        vkCmdCopyBufferToImage(
+            command_buffer.get(), staging_buffer.get(), texture.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+        mi::examples::vk::transitionImageLayout(command_buffer.get(),
+                                                /*image=*/texture.image,
+                                                /*src_access_mask=*/VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                /*dst_access_mask=*/VK_ACCESS_SHADER_READ_BIT,
+                                                /*old_layout=*/VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                /*new_layout=*/VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                /*src_stage_mask=*/VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                                /*dst_stage_mask=*/VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+        command_buffer.end_and_submit(graphics_queue);
+    }
+
+    // Create alias map
+    struct Env_accel
+    {
+        uint32_t alias;
+        float q;
+    };
+
+    auto build_alias_map = [](
+                               const std::vector<float>& data,
+                               std::vector<Env_accel>& accel) -> float
+    {
+        // Create qs (normalized)
+        float sum = std::accumulate(data.begin(), data.end(), 0.0f);
+        uint32_t size = static_cast<uint32_t>(data.size());
+
+        for (uint32_t i = 0; i < size; i++)
+            accel[i].q = static_cast<float>(size) * data[i] / sum;
+
+        // Create partition table
+        std::vector<uint32_t> partition_table(size);
+        uint32_t s = 0;
+        uint32_t large = size;
+        for (uint32_t i = 0; i < size; i++)
+            partition_table[(accel[i].q < 1.0f) ? (s++) : (--large)] = accel[i].alias = i;
+
+        // Create alias map
+        for (s = 0; s < large && large < size; ++s)
+        {
+            uint32_t j = partition_table[s];
+            uint32_t k = partition_table[large];
+            accel[j].alias = k;
+            accel[k].q += accel[j].q - 1.0f;
+            large = (accel[k].q < 1.0f) ? (large + 1) : large;
+        }
+
+        return sum;
+    };
+
+    // Create importance sampling data
+    mi::base::Handle<const mi::neuraylib::ITile> tile(canvas->get_tile());
+    const float* pixels = static_cast<const float*>(tile->get_data());
+
+    std::vector<Env_accel> env_accel_data(res_x * res_y);
+    std::vector<float> importance_data(res_x * res_y);
+    float cos_theta0 = 1.0f;
+    const float step_phi = static_cast<float>(2.0 * M_PI / res_x);
+    const float step_theta = static_cast<float>(M_PI / res_y);
+    for (uint32_t y = 0; y < res_y; y++)
+    {
+        const float theta1 = static_cast<float>(y + 1) * step_theta;
+        const float cos_theta1 = std::cos(theta1);
+        const float area = (cos_theta0 - cos_theta1) * step_phi;
+        cos_theta0 = cos_theta1;
+
+        for (uint32_t x = 0; x < res_x; x++)
+        {
+            const uint32_t idx = y * res_x + x;
+            const uint32_t idx4 = idx * 4;
+            const float max_channel = std::max(pixels[idx4], std::max(pixels[idx4 + 1], pixels[idx4 + 2]));
+            importance_data[idx] = area * max_channel;
+        }
+    }
+    float integral = build_alias_map(importance_data, env_accel_data);
+    environment_inv_integral = 1.0f / integral;
+
+    // Create Vulkan buffer for importance sampling data
+    sampling_data_buffer = mi::examples::vk::create_storage_buffer(
+        device, physical_device, graphics_queue, command_pool, env_accel_data.data(), env_accel_data.size() * sizeof(Env_accel));
+
+    // Create sampler
+    VkSamplerCreateInfo sampler_create_info = {};
+    sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_create_info.magFilter = VK_FILTER_LINEAR;
+    sampler_create_info.minFilter = VK_FILTER_LINEAR;
+    sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_create_info.unnormalizedCoordinates = false;
+
+    VK_CHECK(vkCreateSampler(device, &sampler_create_info, nullptr, &sampler));
 }
 
 } // namespace mi::examples::vk

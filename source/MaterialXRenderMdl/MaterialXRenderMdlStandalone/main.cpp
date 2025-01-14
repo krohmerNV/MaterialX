@@ -31,7 +31,7 @@
  // Simple Vulkan renderer using compiled BSDFs with a material parameter editor GUI.
 
 #include "example_shared.h"
-#include "example_vulkan_shared.h"
+#include "vulkan_base_application.h"
 
 #include <chrono>
 #include <numeric>
@@ -44,22 +44,16 @@ static const VkFormat g_accumulation_texture_format = VK_FORMAT_R32G32B32A32_SFL
 static const uint32_t g_local_size_x = 16;
 static const uint32_t g_local_size_y = 8;
 
-// Descriptor set bindings. Used as a define in the shaders.
+// Descriptor set bindings. Used as a define in the shader.
 static const uint32_t g_binding_beauty_buffer = 0;
-static const uint32_t g_binding_aux_albedo_diffuse_buffer = 1;
-static const uint32_t g_binding_aux_albedo_glossy_buffer = 2;
-static const uint32_t g_binding_aux_normal_buffer = 3;
-static const uint32_t g_binding_aux_roughness_buffer = 4;
 static const uint32_t g_binding_render_params = 5;
 static const uint32_t g_binding_environment_map = 6;
 static const uint32_t g_binding_environment_sampling_data = 7;
 static const uint32_t g_binding_material_textures_2d = 8;
 static const uint32_t g_binding_material_textures_3d = 9;
 static const uint32_t g_binding_ro_data_buffer = 10;
-static const uint32_t g_binding_argument_block_buffer = 11;
 
 static const uint32_t g_set_ro_data_buffer = 0;
-static const uint32_t g_set_argument_block_buffer = 0;
 static const uint32_t g_set_material_textures = 0;
 
 // Command line options structure.
@@ -79,76 +73,20 @@ struct Options
     mi::Float32_3 light_pos = { 10.0f, 0.0f, 5.0f };
     mi::Float32_3 light_intensity = { 1.0f, 0.95f, 0.9f };
     bool light_enabled = false;
-    std::string hdr_file = "nvidia/sdk_examples/resources/environment.hdr";
+    std::string hdr_file = "goegap.hdr";
     float hdr_intensity = 1.0f;
-    bool use_class_compilation = true;
-    uint32_t tex_results_cache_size = 16;
     bool enable_ro_segment = false;
     bool disable_ssbo = false;
     uint32_t max_const_data = 1024;
-    std::string material_name = "::nvidia::sdk_examples::tutorials::example_df";
+    std::string material_name = "::app::not_available";
     bool enable_validation_layers = false;
     bool enable_shader_optimization = true;
     bool dump_glsl = false;
-    bool hide_gui = false;
-    bool enable_bsdf_flags = false;
-    mi::neuraylib::Df_flags allowed_scatter_mode =
-        mi::neuraylib::DF_FLAGS_ALLOW_REFLECT_AND_TRANSMIT;
+    std::vector<std::string> mdl_search_paths = {};
 };
 
 using Vulkan_texture = mi::examples::vk::Vulkan_texture;
 using Vulkan_buffer = mi::examples::vk::Vulkan_buffer;
-
-Vulkan_buffer create_storage_buffer(
-    VkDevice device,
-    VkPhysicalDevice physical_device,
-    VkQueue queue,
-    VkCommandPool command_pool,
-    const void* buffer_data,
-    mi::Size buffer_size)
-{
-    Vulkan_buffer storage_buffer;
-
-    { // Create the storage buffer in device local memory (VRAM)
-        VkBufferCreateInfo buffer_create_info = {};
-        buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        buffer_create_info.size = buffer_size;
-        buffer_create_info.usage
-            = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-        VK_CHECK(vkCreateBuffer(
-            device, &buffer_create_info, nullptr, &storage_buffer.buffer));
-
-        // Allocate device memory for the buffer.
-        storage_buffer.device_memory = mi::examples::vk::allocate_and_bind_buffer_memory(
-            device, physical_device, storage_buffer.buffer,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    }
-
-    {
-        mi::examples::vk::Staging_buffer staging_buffer(
-            device, physical_device, buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
-        // Memcpy the data into the staging buffer
-        void* mapped_data = staging_buffer.map_memory();
-        std::memcpy(mapped_data, buffer_data, buffer_size);
-        staging_buffer.unmap_memory();
-
-        // Upload the data from the staging buffer into the storage buffer
-        mi::examples::vk::Temporary_command_buffer command_buffer(device, command_pool);
-        command_buffer.begin();
-
-        VkBufferCopy copy_region = {};
-        copy_region.size = buffer_size;
-
-        vkCmdCopyBuffer(command_buffer.get(),
-            staging_buffer.get(), storage_buffer.buffer, 1, &copy_region);
-
-        command_buffer.end_and_submit(queue);
-    }
-
-    return storage_buffer;
-}
 
 
 //------------------------------------------------------------------------------
@@ -337,15 +275,11 @@ public:
         mi::base::Handle<mi::neuraylib::IImage_api> image_api,
         mi::base::Handle<const mi::neuraylib::ITarget_code> target_code,
         mi::base::Handle<const mi::neuraylib::ICompiled_material> compiled_material,
-        mi::base::Handle<const mi::neuraylib::IAnnotation_list> material_parameter_annotations,
-        mi::Size argument_block_index,
         const Options& options)
     : Vulkan_example_app(mdl_impexp_api.get(), image_api.get())
     , m_transaction(transaction)
     , m_target_code(target_code)
     , m_compiled_material(compiled_material)
-    , m_material_parameter_annotations(material_parameter_annotations)
-    , m_argument_block_index(argument_block_index)
     , m_options(options)
     {
     }
@@ -353,7 +287,7 @@ public:
     virtual void init_resources() override;
     virtual void cleanup_resources() override;
 
-    // All framebuffer size dependent resources need to be recreated
+    // All frame buffer size dependent resources need to be recreated
     // when the swapchain is recreated due to not being optimal anymore
     // or because the window was resized.
     virtual void recreate_size_dependent_resources() override;
@@ -399,7 +333,7 @@ private:
 
     void update_camera_render_params(const Camera_state& cam_state);
 
-    void create_accumulation_images();
+    void create_accumulation_image();
 
     // Creates the rendering shader module. The generated GLSL target code,
     // GLSL MDL renderer runtime implementation, and renderer code are compiled
@@ -410,7 +344,7 @@ private:
     // pipeline layout. Here the number of material resources is declared.
     void create_descriptor_set_layouts();
 
-    // Create the pipeline layout and state for rendering a fullscreen triangle.
+    // Create the pipeline layout and state for rendering a full screen triangle.
     void create_pipeline_layouts();
     void create_pipelines();
 
@@ -427,26 +361,15 @@ private:
 
     void update_accumulation_image_descriptors();
 
-    void write_accum_images_to_files();
+    void write_accum_images_to_file();
 
 private:
     mi::base::Handle<mi::neuraylib::ITransaction> m_transaction;
     mi::base::Handle<const mi::neuraylib::ITarget_code> m_target_code;
     mi::base::Handle<const mi::neuraylib::ICompiled_material> m_compiled_material;
-    mi::base::Handle<const mi::neuraylib::IAnnotation_list> m_material_parameter_annotations;
-    mi::Size m_argument_block_index;
     Options m_options;
 
-    enum AccumImage
-    {
-        ACCUM_IMAGE_BEAUTY = 0,
-        ACCUM_IMAGE_AUX_ALBEDO_DIFFUSE,
-        ACCUM_IMAGE_AUX_ALBEDO_GLOSSY,
-        ACCUM_IMAGE_AUX_NORMAL,
-        ACCUM_IMAGE_AUX_ROUGHNESS,
-        ACCUM_IMAGE_COUNT
-    };
-    Vulkan_texture m_accum_images[ACCUM_IMAGE_COUNT];
+    Vulkan_texture m_accum_image = {};
     VkSampler m_linear_sampler = nullptr;
 
     VkRenderPass m_path_trace_render_pass = nullptr;
@@ -458,36 +381,30 @@ private:
     VkDescriptorSetLayout m_path_trace_descriptor_set_layout = nullptr;
     VkDescriptorSetLayout m_display_descriptor_set_layout = nullptr;
     VkDescriptorPool m_descriptor_pool = nullptr;
-    std::vector<VkDescriptorSet> m_path_trace_descriptor_sets;
-    VkDescriptorSet m_display_descriptor_set;
-    std::vector<Vulkan_buffer> m_render_params_buffers;
-    VkQueryPool m_query_pool;
+    std::vector<VkDescriptorSet> m_path_trace_descriptor_sets = {};
+    VkDescriptorSet m_display_descriptor_set = nullptr;
+    std::vector<Vulkan_buffer> m_render_params_buffers = {};
+    VkQueryPool m_query_pool = nullptr;
 
-    Vulkan_texture m_environment_map;
-    Vulkan_buffer m_environment_sampling_data_buffer;
-    VkSampler m_environment_sampler;
+    // Environment Map
+    mi::examples::vk::Vulkan_environment_map m_environment_map;
 
     // Material resources
     Vulkan_buffer m_ro_data_buffer;
-    Vulkan_buffer m_argument_block_buffer;
-    std::vector<mi::examples::vk::Staging_buffer> m_argument_block_staging_buffers;
     std::vector<Vulkan_texture> m_material_textures_2d;
     std::vector<Vulkan_texture> m_material_textures_3d;
-    mi::base::Handle<mi::neuraylib::ITarget_argument_block> m_argument_block;
 
     Render_params m_render_params;
     bool m_camera_moved = true; // Force a clear in first frame
-    bool m_material_changed = false; // If the argument buffer needs to be updated
     uint32_t m_display_buffer_index = 0; // Which buffer to display
-    bool m_show_gui = true;
     bool m_first_stats_update = true;
-    double m_last_stats_update;
+    double m_last_stats_update = 0.0;
     float m_render_time = 0.0f;
     bool m_vsync_enabled = true;
     
     // Camera movement
-    Camera_state m_camera_state;
-    mi::Float32_2 m_mouse_start;
+    Camera_state m_camera_state = {};
+    mi::Float32_2 m_mouse_start = {};
     bool m_camera_moving = false;
 };
 
@@ -496,7 +413,7 @@ void Df_vulkan_app::init_resources()
     glslang::InitializeProcess();
 
     m_linear_sampler = mi::examples::vk::create_linear_sampler(m_device);
-    
+
     // Create the render resources for the material
     //
     // Create the storage buffer for the material's read-only data
@@ -510,36 +427,10 @@ void Df_vulkan_app::init_resources()
             terminate();
         }
 
-        m_ro_data_buffer = create_storage_buffer(
+        m_ro_data_buffer = mi::examples::vk::create_storage_buffer(
             m_device, m_physical_device, m_graphics_queue, m_command_pool,
             m_target_code->get_ro_data_segment_data(0),
             m_target_code->get_ro_data_segment_size(0));
-    }
-
-    // Create the storage buffers for the material's argument block
-    bool is_class_compiled = (m_argument_block_index != mi::Size(-1));
-    if (is_class_compiled)
-    {
-        // We create our own copy of the argument data block, so we can modify the material parameters
-        mi::base::Handle<const mi::neuraylib::ITarget_argument_block> readonly_argument_block(
-            m_target_code->get_argument_block(m_argument_block_index));
-        m_argument_block = readonly_argument_block->clone();
-
-        // We create a device-local storage buffer for the argument block for simplicity since we
-        // we don't expect to change the material parameters every frame.
-        // This choice is not meant to be a recommendation. The appropriate memory properties and
-        // buffer update strategies depend on the application.
-        m_argument_block_buffer = create_storage_buffer(
-            m_device, m_physical_device, m_graphics_queue, m_command_pool,
-            m_argument_block->get_data(), m_argument_block->get_size());
-
-        // Need the staging buffer so we can update the argument block storage buffers later
-        m_argument_block_staging_buffers.reserve(m_image_count);
-        for (uint32_t i = 0; i < m_image_count; i++)
-        {
-            m_argument_block_staging_buffers.emplace_back(
-                m_device, m_physical_device, m_argument_block->get_size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-        }
     }
 
     // Record the indices of each texture in their respective array
@@ -579,7 +470,7 @@ void Df_vulkan_app::init_resources()
 
     create_descriptor_set_layouts();
     create_pipeline_layouts();
-    create_accumulation_images();
+    create_accumulation_image();
     create_pipelines();
     create_render_params_buffers();
     create_environment_map();
@@ -590,7 +481,6 @@ void Df_vulkan_app::init_resources()
     m_render_params.progressive_iteration = 0;
     m_render_params.max_path_length = m_options.max_path_length;
     m_render_params.samples_per_iteration = m_options.samples_per_iteration;
-    m_render_params.bsdf_data_flags = m_options.allowed_scatter_mode;
 
     m_render_params.point_light_pos = m_options.light_pos;
     m_render_params.point_light_intensity = m_options.light_enabled
@@ -620,7 +510,7 @@ void Df_vulkan_app::cleanup_resources()
 {
     // In headless mode we output the accumulation buffers to files
     if (m_options.no_window)
-        write_accum_images_to_files();
+        write_accum_images_to_file();
 
     // Cleanup resources
     for (Vulkan_texture& texture : m_material_textures_3d)
@@ -628,10 +518,7 @@ void Df_vulkan_app::cleanup_resources()
     for (Vulkan_texture& texture : m_material_textures_2d)
         texture.destroy(m_device);
     m_ro_data_buffer.destroy(m_device);
-    m_argument_block_buffer.destroy(m_device);
-    m_argument_block_staging_buffers.clear();
 
-    m_environment_sampling_data_buffer.destroy(m_device);
     m_environment_map.destroy(m_device);
 
     for (Vulkan_buffer& buffer : m_render_params_buffers)
@@ -648,14 +535,12 @@ void Df_vulkan_app::cleanup_resources()
     vkDestroyRenderPass(m_device, m_path_trace_render_pass, nullptr);
     vkDestroySampler(m_device, m_linear_sampler, nullptr);
 
-    for (Vulkan_texture& texture : m_accum_images)
-        texture.destroy(m_device);
-    vkDestroySampler(m_device, m_environment_sampler, nullptr);
+    m_accum_image.destroy(m_device);
 
     glslang::FinalizeProcess();
 }
 
-// All framebuffer size dependent resources need to be recreated
+// All frame buffer size dependent resources need to be recreated
 // when the swapchain is recreated due to not being optimal anymore
 // or because the window was resized.
 void Df_vulkan_app::recreate_size_dependent_resources()
@@ -663,11 +548,9 @@ void Df_vulkan_app::recreate_size_dependent_resources()
     vkDestroyPipeline(m_device, m_path_trace_pipeline, nullptr);
     vkDestroyPipeline(m_device, m_display_pipeline, nullptr);
     vkDestroyRenderPass(m_device, m_path_trace_render_pass, nullptr);
+    m_accum_image.destroy(m_device);
 
-    for (Vulkan_texture& texture : m_accum_images)
-        texture.destroy(m_device);
-
-    create_accumulation_images();
+    create_accumulation_image();
     create_pipelines();
 
     update_accumulation_image_descriptors();
@@ -675,7 +558,7 @@ void Df_vulkan_app::recreate_size_dependent_resources()
 
 // Updates the application logic. This is called right before the
 // next frame is rendered.
-void Df_vulkan_app::update(float elapsed_seconds, uint32_t frame_index)
+void Df_vulkan_app::update(float /*elapsed_seconds*/, uint32_t frame_index)
 {
     uint64_t timestamps[2];
     VkResult result = vkGetQueryPoolResults(m_device, m_query_pool, frame_index * 2, 2,
@@ -699,7 +582,7 @@ void Df_vulkan_app::update(float elapsed_seconds, uint32_t frame_index)
     if (m_camera_moved)
         m_render_params.progressive_iteration = 0;
 
-    // Update current frame's render params uniform buffer
+    // Update current frame's render parameters uniform buffer
     std::memcpy(m_render_params_buffers[frame_index].mapped_data,
         &m_render_params, sizeof(Render_params));
 
@@ -709,22 +592,6 @@ void Df_vulkan_app::update(float elapsed_seconds, uint32_t frame_index)
 // Populates the current frame's command buffer.
 void Df_vulkan_app::render(VkCommandBuffer command_buffer, uint32_t frame_index, uint32_t image_index)
 {
-    // Update the storage buffer for the material's argument block if any argument value changed
-    if (m_material_changed)
-    {
-        m_material_changed = false;
-
-        void* mapped_data = m_argument_block_staging_buffers[frame_index].map_memory();
-        std::memcpy(mapped_data, m_argument_block->get_data(), m_argument_block->get_size());
-        m_argument_block_staging_buffers[frame_index].unmap_memory();
-
-        VkBufferCopy copy_region = {};
-        copy_region.size = m_argument_block->get_size();
-
-        vkCmdCopyBuffer(command_buffer,
-            m_argument_block_staging_buffers[frame_index].get(), m_argument_block_buffer.buffer, 1, &copy_region);
-    }
-
     // Path trace compute pass
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_path_trace_pipeline);
 
@@ -736,20 +603,17 @@ void Df_vulkan_app::render(VkCommandBuffer command_buffer, uint32_t frame_index,
     {
         m_camera_moved = false;
 
-        for (const Vulkan_texture& accum_image : m_accum_images)
-        {
-            VkClearColorValue clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
+        VkClearColorValue clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-            VkImageSubresourceRange clear_range;
-            clear_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            clear_range.baseMipLevel = 0;
-            clear_range.levelCount = 1;
-            clear_range.baseArrayLayer = 0;
-            clear_range.layerCount = 1;
+        VkImageSubresourceRange clear_range;
+        clear_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear_range.baseMipLevel = 0;
+        clear_range.levelCount = 1;
+        clear_range.baseArrayLayer = 0;
+        clear_range.layerCount = 1;
 
-            vkCmdClearColorImage(command_buffer,
-                accum_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
-        }
+        vkCmdClearColorImage(command_buffer,
+            m_accum_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
     }
 
     vkCmdResetQueryPool(command_buffer, m_query_pool, frame_index * 2, 2);
@@ -761,17 +625,14 @@ void Df_vulkan_app::render(VkCommandBuffer command_buffer, uint32_t frame_index,
 
     vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_query_pool, frame_index * 2 + 1);
 
-    for (const Vulkan_texture& accum_image : m_accum_images)
-    {
-        mi::examples::vk::transitionImageLayout(command_buffer,
-            /*image=*/           accum_image.image,
-            /*src_access_mask=*/ VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-            /*dst_access_mask=*/ VK_ACCESS_SHADER_READ_BIT,
-            /*old_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
-            /*new_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
-            /*src_stage_mask=*/  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            /*dst_stage_mask=*/  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    }
+    mi::examples::vk::transitionImageLayout(command_buffer,
+        /*image=*/           m_accum_image.image,
+        /*src_access_mask=*/ VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        /*dst_access_mask=*/ VK_ACCESS_SHADER_READ_BIT,
+        /*old_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
+        /*new_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
+        /*src_stage_mask=*/  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        /*dst_stage_mask=*/  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
     // Display render pass
     VkRenderPassBeginInfo render_pass_begin_info = {};
@@ -804,7 +665,7 @@ void Df_vulkan_app::render(VkCommandBuffer command_buffer, uint32_t frame_index,
 }
 
 // Gets called when the window is resized.
-void Df_vulkan_app::resized_callback(uint32_t width, uint32_t height)
+void Df_vulkan_app::resized_callback(uint32_t /*width*/, uint32_t /*height*/)
 {
     m_camera_moved = true;
 }
@@ -829,7 +690,7 @@ void Df_vulkan_app::update_camera_render_params(const Camera_state& cam_state)
     m_render_params.cam_pos.z = -m_render_params.cam_dir.z * dist;
 }
 
-void Df_vulkan_app::create_accumulation_images()
+void Df_vulkan_app::create_accumulation_image()
 {
     VkImageCreateInfo image_create_info = {};
     image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -846,29 +707,22 @@ void Df_vulkan_app::create_accumulation_images()
         | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    for (Vulkan_texture& accum_image : m_accum_images)
-    {
-        VK_CHECK(vkCreateImage(m_device, &image_create_info, nullptr, &accum_image.image));
-
-        accum_image.device_memory = mi::examples::vk::allocate_and_bind_image_memory(
-            m_device, m_physical_device, accum_image.image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    }
+    VK_CHECK(vkCreateImage(m_device, &image_create_info, nullptr, &m_accum_image.image));
+    m_accum_image.device_memory = mi::examples::vk::allocate_and_bind_image_memory(
+        m_device, m_physical_device, m_accum_image.image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     { // Transition image layout
         mi::examples::vk::Temporary_command_buffer command_buffer(m_device, m_command_pool);
         command_buffer.begin();
 
-        for (Vulkan_texture& accum_image : m_accum_images)
-        {
-            mi::examples::vk::transitionImageLayout(command_buffer.get(),
-                /*image=*/           accum_image.image,
-                /*src_access_mask=*/ 0,
-                /*dst_access_mask=*/ VK_ACCESS_SHADER_READ_BIT,
-                /*old_layout=*/      VK_IMAGE_LAYOUT_UNDEFINED,
-                /*new_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
-                /*src_stage_mask=*/  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                /*dst_stage_mask=*/  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-        }
+        mi::examples::vk::transitionImageLayout(command_buffer.get(),
+            /*image=*/           m_accum_image.image,
+            /*src_access_mask=*/ 0,
+            /*dst_access_mask=*/ VK_ACCESS_SHADER_READ_BIT,
+            /*old_layout=*/      VK_IMAGE_LAYOUT_UNDEFINED,
+            /*new_layout=*/      VK_IMAGE_LAYOUT_GENERAL,
+            /*src_stage_mask=*/  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            /*dst_stage_mask=*/  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
         command_buffer.end_and_submit(m_graphics_queue);
     }
@@ -883,13 +737,9 @@ void Df_vulkan_app::create_accumulation_images()
     image_view_create_info.subresourceRange.baseArrayLayer = 0;
     image_view_create_info.subresourceRange.layerCount = 1;
 
-    for (Vulkan_texture& accum_image : m_accum_images)
-    {
-        image_view_create_info.image = accum_image.image;
-
-        VK_CHECK(vkCreateImageView(
-            m_device, &image_view_create_info, nullptr, &accum_image.image_view));
-    }
+    image_view_create_info.image = m_accum_image.image;
+    VK_CHECK(vkCreateImageView(
+        m_device, &image_view_create_info, nullptr, &m_accum_image.image_view));
 }
 
 VkShaderModule Df_vulkan_app::create_path_trace_shader_module()
@@ -897,7 +747,7 @@ VkShaderModule Df_vulkan_app::create_path_trace_shader_module()
     std::string df_glsl_source = m_target_code->get_code();
 
     std::string path_trace_shader_source = mi::examples::io::read_text_file(
-        mi::examples::io::get_executable_folder() + "/" + "path_trace.comp");
+        mi::examples::io::get_executable_folder() + "/MaterialXRenderMdlStandalone/" + "path_trace.comp");
 
     std::vector<std::string> defines;
     defines.push_back("LOCAL_SIZE_X=" + std::to_string(g_local_size_x));
@@ -907,22 +757,15 @@ VkShaderModule Df_vulkan_app::create_path_trace_shader_module()
     defines.push_back("BINDING_ENV_MAP=" + std::to_string(g_binding_environment_map));
     defines.push_back("BINDING_ENV_MAP_SAMPLING_DATA=" + std::to_string(g_binding_environment_sampling_data));
     defines.push_back("BINDING_BEAUTY_BUFFER=" + std::to_string(g_binding_beauty_buffer));
-    defines.push_back("BINDING_AUX_ALBEDO_DIFFUSE_BUFFER=" + std::to_string(g_binding_aux_albedo_diffuse_buffer));
-    defines.push_back("BINDING_AUX_ALBEDO_GLOSSY_BUFFER=" + std::to_string(g_binding_aux_albedo_glossy_buffer));
-    defines.push_back("BINDING_AUX_NORMAL_BUFFER=" + std::to_string(g_binding_aux_normal_buffer));
-    defines.push_back("BINDING_AUX_ROUGHNESS_BUFFER=" + std::to_string(g_binding_aux_roughness_buffer));
 
     defines.push_back("MDL_SET_MATERIAL_TEXTURES_2D=" + std::to_string(g_set_material_textures));
     defines.push_back("MDL_SET_MATERIAL_TEXTURES_3D=" + std::to_string(g_set_material_textures));
-    defines.push_back("MDL_SET_MATERIAL_ARGUMENT_BLOCK=" + std::to_string(g_set_argument_block_buffer));
     defines.push_back("MDL_SET_MATERIAL_RO_DATA_SEGMENT=" + std::to_string(g_set_ro_data_buffer));
     defines.push_back("MDL_BINDING_MATERIAL_TEXTURES_2D=" + std::to_string(g_binding_material_textures_2d));
     defines.push_back("MDL_BINDING_MATERIAL_TEXTURES_3D=" + std::to_string(g_binding_material_textures_3d));
-    defines.push_back("MDL_BINDING_MATERIAL_ARGUMENT_BLOCK=" + std::to_string(g_binding_argument_block_buffer));
     defines.push_back("MDL_BINDING_MATERIAL_RO_DATA_SEGMENT=" + std::to_string(g_binding_ro_data_buffer));
 
-    if (m_options.tex_results_cache_size > 0)
-        defines.push_back("NUM_TEX_RESULTS=" + std::to_string(m_options.tex_results_cache_size));
+    defines.push_back("NUM_TEX_RESULTS=16");
 
     if (m_options.enable_ro_segment)
         defines.push_back("USE_RO_DATA_SEGMENT");
@@ -982,12 +825,7 @@ void Df_vulkan_app::create_descriptor_set_layouts()
         bindings.push_back(make_binding(g_binding_material_textures_2d, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_num_textures));
         bindings.push_back(make_binding(g_binding_material_textures_3d, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_num_textures));
         bindings.push_back(make_binding(g_binding_beauty_buffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1));
-        bindings.push_back(make_binding(g_binding_aux_albedo_diffuse_buffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1));
-        bindings.push_back(make_binding(g_binding_aux_albedo_glossy_buffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1));
-        bindings.push_back(make_binding(g_binding_aux_normal_buffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1));
-        bindings.push_back(make_binding(g_binding_aux_roughness_buffer, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1));
         bindings.push_back(make_binding(g_binding_ro_data_buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1));
-        bindings.push_back(make_binding(g_binding_argument_block_buffer, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1));
 
         VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {};
         descriptor_set_layout_create_info.sType
@@ -1046,17 +884,12 @@ void Df_vulkan_app::create_pipeline_layouts()
     }
 
     { // Display graphics pipeline layout
-        VkPushConstantRange push_constant_range;
-        push_constant_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        push_constant_range.offset = 0;
-        push_constant_range.size = sizeof(uint32_t);
-
         VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
         pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipeline_layout_create_info.setLayoutCount = 1;
         pipeline_layout_create_info.pSetLayouts = &m_display_descriptor_set_layout;
-        pipeline_layout_create_info.pushConstantRangeCount = 1;
-        pipeline_layout_create_info.pPushConstantRanges = &push_constant_range;
+        pipeline_layout_create_info.pushConstantRangeCount = 0;
+        pipeline_layout_create_info.pPushConstantRanges = nullptr;
 
         VK_CHECK(vkCreatePipelineLayout(
             m_device, &pipeline_layout_create_info, nullptr, &m_display_pipeline_layout));
@@ -1088,10 +921,10 @@ void Df_vulkan_app::create_pipelines()
     { // Create display graphics pipeline
         VkShaderModule fullscreen_triangle_vertex_shader
             = mi::examples::vk::create_shader_module_from_file(
-                m_device, "display.vert", EShLangVertex, {}, m_options.enable_shader_optimization);
+                m_device, "MaterialXRenderMdlStandalone/display.vert", EShLangVertex, {}, m_options.enable_shader_optimization);
         VkShaderModule display_fragment_shader
             = mi::examples::vk::create_shader_module_from_file(
-                m_device, "display.frag", EShLangFragment, {}, m_options.enable_shader_optimization);
+                m_device, "MaterialXRenderMdlStandalone/display.frag", EShLangFragment, {}, m_options.enable_shader_optimization);
 
         m_display_pipeline = mi::examples::vk::create_fullscreen_triangle_graphics_pipeline(
             m_device, m_display_pipeline_layout, fullscreen_triangle_vertex_shader,
@@ -1128,179 +961,16 @@ void Df_vulkan_app::create_render_params_buffers()
 
 void Df_vulkan_app::create_environment_map()
 {
+    std::string path = m_options.hdr_file;
+    if (!mi::examples::io::is_absolute_path(m_options.hdr_file))
+        path = mi::examples::io::get_executable_folder() + "/" + path;
+
+    if (!mi::examples::io::exists(path))
+        exit_failure("Failed to load environment map.");
+
     // Load environment texture
-    mi::base::Handle<mi::neuraylib::IImage> image(
-        m_transaction->create<mi::neuraylib::IImage>("Image"));
-    check_success(image->reset_file(m_options.hdr_file.c_str()) == 0);
-
-    mi::base::Handle<const mi::neuraylib::ICanvas> canvas(image->get_canvas(0, 0, 0));
-    const mi::Uint32 res_x = canvas->get_resolution_x();
-    const mi::Uint32 res_y = canvas->get_resolution_y();
-
-    // Check, whether we need to convert the image
-    char const* image_type = image->get_type(0, 0);
-    if (strcmp(image_type, "Color") != 0 && strcmp(image_type, "Float32<4>") != 0)
-        canvas = m_image_api->convert(canvas.get(), "Color");
-
-    // Create the Vulkan texture
-    VkImageCreateInfo image_create_info = {};
-    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_create_info.imageType = VK_IMAGE_TYPE_2D;
-    image_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-    image_create_info.extent = { res_x, res_y, 1 };
-    image_create_info.mipLevels = 1;
-    image_create_info.arrayLayers = 1;
-    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VK_CHECK(vkCreateImage(m_device, &image_create_info, nullptr, &m_environment_map.image));
-
-    m_environment_map.device_memory = mi::examples::vk::allocate_and_bind_image_memory(
-        m_device, m_physical_device, m_environment_map.image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    VkImageViewCreateInfo image_view_create_info = {};
-    image_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    image_view_create_info.image = m_environment_map.image;
-    image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    image_view_create_info.format = image_create_info.format;
-    image_view_create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_view_create_info.subresourceRange.baseMipLevel = 0;
-    image_view_create_info.subresourceRange.levelCount = 1;
-    image_view_create_info.subresourceRange.baseArrayLayer = 0;
-    image_view_create_info.subresourceRange.layerCount = 1;
-
-    VK_CHECK(vkCreateImageView(
-        m_device, &image_view_create_info, nullptr, &m_environment_map.image_view));
-
-    { // Upload image data to the GPU
-        size_t staging_buffer_size = res_x * res_y * sizeof(float) * 4; // RGBA32F
-        mi::examples::vk::Staging_buffer staging_buffer(m_device, m_physical_device,
-            staging_buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
-        // Memcpy the read-only data into the staging buffer
-        mi::base::Handle<const mi::neuraylib::ITile> tile(canvas->get_tile());
-        void* mapped_data = staging_buffer.map_memory();
-        std::memcpy(mapped_data, tile->get_data(), staging_buffer_size);
-        staging_buffer.unmap_memory();
-
-        // Upload the read-only data from the staging buffer into the storage buffer
-        mi::examples::vk::Temporary_command_buffer command_buffer(m_device, m_command_pool);
-        command_buffer.begin();
-
-        mi::examples::vk::transitionImageLayout(command_buffer.get(),
-            /*image=*/           m_environment_map.image,
-            /*src_access_mask=*/ 0,
-            /*dst_access_mask=*/ VK_ACCESS_TRANSFER_WRITE_BIT,
-            /*old_layout=*/      VK_IMAGE_LAYOUT_UNDEFINED,
-            /*new_layout=*/      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            /*src_stage_mask=*/  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            /*dst_stage_mask=*/  VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-        VkBufferImageCopy copy_region = {};
-        copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy_region.imageSubresource.layerCount = 1;
-        copy_region.imageExtent = { res_x, res_y, 1 };
-
-        vkCmdCopyBufferToImage(
-            command_buffer.get(), staging_buffer.get(), m_environment_map.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
-
-        mi::examples::vk::transitionImageLayout(command_buffer.get(),
-            /*image=*/           m_environment_map.image,
-            /*src_access_mask=*/ VK_ACCESS_TRANSFER_WRITE_BIT,
-            /*dst_access_mask=*/ VK_ACCESS_SHADER_READ_BIT,
-            /*old_layout=*/      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            /*new_layout=*/      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            /*src_stage_mask=*/  VK_PIPELINE_STAGE_TRANSFER_BIT,
-            /*dst_stage_mask=*/  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-
-        command_buffer.end_and_submit(m_graphics_queue);
-    }
-
-    // Create alias map
-    struct Env_accel {
-        uint32_t alias;
-        float q;
-    };
-
-    auto build_alias_map = [](
-        const std::vector<float>& data,
-        std::vector<Env_accel>& accel) -> float
-    {
-        // Create qs (normalized)
-        float sum = std::accumulate(data.begin(), data.end(), 0.0f);
-        uint32_t size = static_cast<uint32_t>(data.size());
-
-        for (uint32_t i = 0; i < size; i++)
-            accel[i].q = static_cast<float>(size) * data[i] / sum;
-
-        // Create partition table
-        std::vector<uint32_t> partition_table(size);
-        uint32_t s = 0;
-        uint32_t large = size;
-        for (uint32_t i = 0; i < size; i++)
-            partition_table[(accel[i].q < 1.0f) ? (s++) : (--large)] = accel[i].alias = i;
-
-        // Create alias map
-        for (s = 0; s < large && large < size; ++s)
-        {
-            uint32_t j = partition_table[s];
-            uint32_t k = partition_table[large];
-            accel[j].alias = k;
-            accel[k].q += accel[j].q - 1.0f;
-            large = (accel[k].q < 1.0f) ? (large + 1) : large;
-        }
-
-        return sum;
-    };
-
-    // Create importance sampling data
-    mi::base::Handle<const mi::neuraylib::ITile> tile(canvas->get_tile());
-    const float* pixels = static_cast<const float*>(tile->get_data());
-
-    std::vector<Env_accel> env_accel_data(res_x * res_y);
-    std::vector<float> importance_data(res_x * res_y);
-    float cos_theta0 = 1.0f;
-    const float step_phi = static_cast<float>(2.0 * M_PI / res_x);
-    const float step_theta = static_cast<float>(M_PI / res_y);
-    for (uint32_t y = 0; y < res_y; y++)
-    {
-        const float theta1 = static_cast<float>(y + 1) * step_theta;
-        const float cos_theta1 = std::cos(theta1);
-        const float area = (cos_theta0 - cos_theta1) * step_phi;
-        cos_theta0 = cos_theta1;
-
-        for (uint32_t x = 0; x < res_x; x++)
-        {
-            const uint32_t idx = y * res_x + x;
-            const uint32_t idx4 = idx * 4;
-            const float max_channel
-                = std::max(pixels[idx4], std::max(pixels[idx4 + 1], pixels[idx4 + 2]));
-            importance_data[idx] = area * max_channel;
-        }
-    }
-    float integral = build_alias_map(importance_data, env_accel_data);
-    m_render_params.environment_inv_integral = 1.0f / integral;
-
-    // Create Vulkan buffer for importance sampling data
-    m_environment_sampling_data_buffer = create_storage_buffer(m_device, m_physical_device,
-        m_graphics_queue, m_command_pool, env_accel_data.data(), env_accel_data.size() * sizeof(Env_accel));
-
-    // Create sampler
-    VkSamplerCreateInfo sampler_create_info = {};
-    sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampler_create_info.magFilter = VK_FILTER_LINEAR;
-    sampler_create_info.minFilter = VK_FILTER_LINEAR;
-    sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_create_info.unnormalizedCoordinates = false;
-
-    VK_CHECK(vkCreateSampler(m_device, &sampler_create_info, nullptr, &m_environment_sampler));
+    m_environment_map.create(m_device, m_physical_device, m_command_pool, m_graphics_queue, m_image_api.get(), m_transaction.get(), path);
+    m_render_params.environment_inv_integral = m_environment_map.environment_inv_integral;
 }
 
 // Creates the descriptor pool and set that hold enough space for all
@@ -1370,7 +1040,7 @@ void Df_vulkan_app::create_descriptor_pool_and_sets()
         descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptor_write.dstSet = m_path_trace_descriptor_sets[i];
 
-        { // Render params buffer
+        { // Render parameter buffer
             VkDescriptorBufferInfo descriptor_buffer_info = {};
             descriptor_buffer_info.buffer = m_render_params_buffers[i].buffer;
             descriptor_buffer_info.range = VK_WHOLE_SIZE;
@@ -1388,8 +1058,8 @@ void Df_vulkan_app::create_descriptor_pool_and_sets()
 
         { // Environment map
             VkDescriptorImageInfo descriptor_image_info = {};
-            descriptor_image_info.sampler = m_environment_sampler;
-            descriptor_image_info.imageView = m_environment_map.image_view;
+            descriptor_image_info.sampler = m_environment_map.sampler;
+            descriptor_image_info.imageView = m_environment_map.texture.image_view;
             descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             descriptor_image_infos.push_back(descriptor_image_info);
 
@@ -1405,7 +1075,7 @@ void Df_vulkan_app::create_descriptor_pool_and_sets()
 
         { // Environment map sampling data
             VkDescriptorBufferInfo descriptor_buffer_info = {};
-            descriptor_buffer_info.buffer = m_environment_sampling_data_buffer.buffer;
+            descriptor_buffer_info.buffer = m_environment_map.sampling_data_buffer.buffer;
             descriptor_buffer_info.range = VK_WHOLE_SIZE;
             descriptor_buffer_infos.push_back(descriptor_buffer_info);
 
@@ -1480,24 +1150,6 @@ void Df_vulkan_app::create_descriptor_pool_and_sets()
             descriptor_write.pBufferInfo = &descriptor_buffer_infos.back();
             descriptor_writes.push_back(descriptor_write);
         }
-
-        // Material argument block buffer
-        if (m_argument_block_buffer.buffer)
-        {
-            VkDescriptorBufferInfo descriptor_buffer_info = {};
-            descriptor_buffer_info.buffer = m_argument_block_buffer.buffer;
-            descriptor_buffer_info.range = VK_WHOLE_SIZE;
-            descriptor_buffer_infos.push_back(descriptor_buffer_info);
-
-            VkWriteDescriptorSet descriptor_write = {};
-            descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptor_write.dstSet = m_path_trace_descriptor_sets[i];
-            descriptor_write.dstBinding = g_binding_argument_block_buffer;
-            descriptor_write.descriptorCount = 1;
-            descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            descriptor_write.pBufferInfo = &descriptor_buffer_infos.back();
-            descriptor_writes.push_back(descriptor_write);
-        }
     }
 
     vkUpdateDescriptorSets(
@@ -1527,15 +1179,7 @@ void Df_vulkan_app::update_accumulation_image_descriptors()
     std::vector<VkWriteDescriptorSet> descriptor_writes;
 
     std::vector<VkDescriptorImageInfo> descriptor_image_infos;
-    descriptor_image_infos.reserve(m_image_count * ACCUM_IMAGE_COUNT + ACCUM_IMAGE_COUNT);
-
-    const uint32_t accum_image_bindings[] = {
-        g_binding_beauty_buffer,
-        g_binding_aux_albedo_diffuse_buffer,
-        g_binding_aux_albedo_glossy_buffer,
-        g_binding_aux_normal_buffer,
-        g_binding_aux_roughness_buffer
-    };
+    descriptor_image_infos.reserve(m_image_count + 1);
 
     for (uint32_t i = 0; i < m_image_count; i++)
     {
@@ -1548,15 +1192,12 @@ void Df_vulkan_app::update_accumulation_image_descriptors()
         descriptor_write.descriptorCount = 1;
         descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-        for (size_t j = 0; j < ACCUM_IMAGE_COUNT; j++)
-        {
-            descriptor_image_info.imageView = m_accum_images[j].image_view;
-            descriptor_image_infos.push_back(descriptor_image_info);
+        descriptor_image_info.imageView = m_accum_image.image_view;
+        descriptor_image_infos.push_back(descriptor_image_info);
 
-            descriptor_write.dstBinding = accum_image_bindings[j];
-            descriptor_write.pImageInfo = &descriptor_image_infos.back();
-            descriptor_writes.push_back(descriptor_write);
-        }
+        descriptor_write.dstBinding = g_binding_beauty_buffer;
+        descriptor_write.pImageInfo = &descriptor_image_infos.back();
+        descriptor_writes.push_back(descriptor_write);
     }
 
     VkDescriptorImageInfo descriptor_info = {};
@@ -1569,22 +1210,18 @@ void Df_vulkan_app::update_accumulation_image_descriptors()
     descriptor_write.descriptorCount = 1;
     descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-    for (uint32_t i = 0; i < ACCUM_IMAGE_COUNT; i++)
-    {
-        descriptor_info.imageView = m_accum_images[i].image_view;
-        descriptor_image_infos.push_back(descriptor_info);
-
-        descriptor_write.dstBinding = i;
-        descriptor_write.pImageInfo = &descriptor_image_infos.back();
-        descriptor_writes.push_back(descriptor_write);
-    }
+    descriptor_info.imageView = m_accum_image.image_view;
+    descriptor_image_infos.push_back(descriptor_info);
+    descriptor_write.dstBinding = 0;
+    descriptor_write.pImageInfo = &descriptor_image_infos.back();
+    descriptor_writes.push_back(descriptor_write);
 
     vkUpdateDescriptorSets(
         m_device, static_cast<uint32_t>(descriptor_writes.size()),
         descriptor_writes.data(), 0, nullptr);
 }
 
-void Df_vulkan_app::write_accum_images_to_files()
+void Df_vulkan_app::write_accum_images_to_file()
 {
     auto export_pixels_rgba32f = [&](const std::vector<uint8_t>& pixels, const std::string& filename)
     {
@@ -1597,21 +1234,10 @@ void Df_vulkan_app::write_accum_images_to_files()
     };
 
     uint32_t image_bpp = mi::examples::vk::get_image_format_bpp(g_accumulation_texture_format);
-    std::vector<uint8_t> image_pixels[ACCUM_IMAGE_COUNT];
-    for (uint32_t i = 0; i < ACCUM_IMAGE_COUNT; i++)
-    {
-        image_pixels[i] = mi::examples::vk::copy_image_to_buffer(
-            m_device, m_physical_device, m_command_pool, m_graphics_queue,
-            m_accum_images[i].image, m_image_width, m_image_height, image_bpp,
-            VK_IMAGE_LAYOUT_GENERAL, false);
-    }
-
-    std::vector<uint8_t> albedo_pixels(m_image_width * m_image_height * image_bpp);
-    float* albedo_ptr = reinterpret_cast<float*>(albedo_pixels.data());
-    float* albedo_diffuse_ptr = reinterpret_cast<float*>(image_pixels[ACCUM_IMAGE_AUX_ALBEDO_DIFFUSE].data());
-    float* albedo_glossy_ptr = reinterpret_cast<float*>(image_pixels[ACCUM_IMAGE_AUX_ALBEDO_GLOSSY].data());
-    for (size_t i = 0; i < albedo_pixels.size() / sizeof(float); i++)
-        albedo_ptr[i] = albedo_diffuse_ptr[i] + albedo_glossy_ptr[i];
+    std::vector<uint8_t> image_pixel = mi::examples::vk::copy_image_to_buffer(
+        m_device, m_physical_device, m_command_pool, m_graphics_queue,
+        m_accum_image.image, m_image_width, m_image_height, image_bpp,
+        VK_IMAGE_LAYOUT_GENERAL, false);
 
     std::string filename_base = m_options.output_file;
     std::string filename_ext;
@@ -1623,12 +1249,7 @@ void Df_vulkan_app::write_accum_images_to_files()
         filename_ext = m_options.output_file.substr(dot_pos);
     }
 
-    export_pixels_rgba32f(image_pixels[ACCUM_IMAGE_BEAUTY], filename_base + filename_ext);
-    export_pixels_rgba32f(albedo_pixels, filename_base + "_albedo" + filename_ext);
-    export_pixels_rgba32f(image_pixels[ACCUM_IMAGE_AUX_ALBEDO_DIFFUSE], filename_base + "_albedo_diffuse" + filename_ext);
-    export_pixels_rgba32f(image_pixels[ACCUM_IMAGE_AUX_ALBEDO_GLOSSY], filename_base + "_albedo_glossy" + filename_ext);
-    export_pixels_rgba32f(image_pixels[ACCUM_IMAGE_AUX_NORMAL], filename_base + "_normal" + filename_ext);
-    export_pixels_rgba32f(image_pixels[ACCUM_IMAGE_AUX_ROUGHNESS], filename_base + "_roughness" + filename_ext);
+    export_pixels_rgba32f(image_pixel, m_options.output_file);
 }
 
 
@@ -1640,8 +1261,7 @@ mi::neuraylib::IFunction_call* create_material_instance(
     mi::neuraylib::IMdl_factory* mdl_factory,
     mi::neuraylib::ITransaction* transaction,
     mi::neuraylib::IMdl_execution_context* context,
-    const std::string& material_name,
-    mi::base::Handle<const mi::neuraylib::IAnnotation_list>& material_parameter_annotations)
+    const std::string& material_name)
 {
     // Split material name into module and simple material name
     std::string module_name, material_simple_name;
@@ -1681,8 +1301,6 @@ mi::neuraylib::IFunction_call* create_material_instance(
     if (result != 0)
         exit_failure("Failed to instantiate material '%s'.", material_db_name.c_str());
 
-    material_parameter_annotations = material_definition->get_parameter_annotations();
-
     material_instance->retain();
     return material_instance.get();
 }
@@ -1690,26 +1308,30 @@ mi::neuraylib::IFunction_call* create_material_instance(
 mi::neuraylib::ICompiled_material* compile_material_instance(
     mi::neuraylib::IMdl_factory *mdl_factory,
     mi::neuraylib::ITransaction *transaction,
-    mi::neuraylib::IFunction_call* material_instance,
-    mi::neuraylib::IMdl_execution_context* context,
-    bool class_compilation)
+    mi::neuraylib::IFunction_call* function_call,
+    mi::neuraylib::IMdl_execution_context* context)
 {
-    mi::base::Handle<const mi::neuraylib::IMaterial_instance> material_instance2(
-        material_instance->get_interface<mi::neuraylib::IMaterial_instance>());
-
-    mi::Uint32 compile_flags = class_compilation
-        ? mi::neuraylib::IMaterial_instance::CLASS_COMPILATION
-        : mi::neuraylib::IMaterial_instance::DEFAULT_OPTIONS;
+    // a material instance is a special function call
+    mi::base::Handle<const mi::neuraylib::IMaterial_instance> material_instance(
+        function_call->get_interface<mi::neuraylib::IMaterial_instance>());
 
     // convert to target type SID_MATERIAL
+    // MDL 1.9 supports custom material types for generalized AOV support
     mi::base::Handle<mi::neuraylib::IType_factory> tf(
         mdl_factory->create_type_factory(transaction));
     mi::base::Handle<const mi::neuraylib::IType> standard_material_type(
         tf->get_predefined_struct(mi::neuraylib::IType_struct::SID_MATERIAL));
     context->set_option("target_type", standard_material_type.get());
 
+    // Since this application is not interactive the user cannot change parameters
+    // at runtime. In cases where this is needed the MDL SDK offers a class compilation
+    // mode that allows to change parameter edits without recompilation.
+    // please refer to the MDL SDK examples for this. E.g., example df_vulkan
+    mi::Uint32 compile_flags = mi::neuraylib::IMaterial_instance::DEFAULT_OPTIONS;
+
+    // compile the material
     mi::base::Handle<mi::neuraylib::ICompiled_material> compiled_material(
-        material_instance2->create_compiled_material(compile_flags, context));
+        material_instance->create_compiled_material(compile_flags, context));
     check_success(print_messages(context));
 
     compiled_material->retain();
@@ -1721,8 +1343,7 @@ const mi::neuraylib::ITarget_code* generate_glsl_code(
     mi::neuraylib::IMdl_backend_api* mdl_backend_api,
     mi::neuraylib::ITransaction* transaction,
     mi::neuraylib::IMdl_execution_context* context,
-    const Options& options,
-    mi::Size& argument_block_index)
+    const Options& options)
 {
     // Add compiled material to link unit
     mi::base::Handle<mi::neuraylib::IMdl_backend> be_glsl(
@@ -1745,13 +1366,31 @@ const mi::neuraylib::ITarget_code* generate_glsl_code(
         check_success(be_glsl->set_option("max_const_data",
             std::to_string(options.max_const_data).c_str()) == 0);
     }
+
+    // The number of texture coordinate sets that can be queried from the state.
+    // This corresponds to the maximum number of texture coordinate sets provided
+    // by the geometry in the scene.
     check_success(be_glsl->set_option("num_texture_spaces", "1") == 0);
-    check_success(be_glsl->set_option("num_texture_results",
-        std::to_string(options.tex_results_cache_size).c_str()) == 0);
-    check_success(be_glsl->set_option("enable_auxiliary", "on") == 0);
+
+    // Material code that is shared among different expressions within the
+    // material can be precomputed in the beginning of the material shader execution in `mdl_init`.
+    // The results are store in a cache and `num_texture_results` defines the size
+    // of this cache as number float4s. Shared results that don't fit into the cache
+    // are computed on the fly.
+    check_success(be_glsl->set_option("num_texture_results", "16") == 0);
+
+    // For Denoising, the MDL SDK can generate auxiliary functions to compute the
+    // input buffers of common denoisers. This includes:
+    // - an albedo approximation separated into diffuse and glossy 
+    // - shading normal
+    // - roughness
+    check_success(be_glsl->set_option("enable_auxiliary", "off") == 0);
+
+    // For light path expressions (LPEs), the MDL SDK allows to evaluate and sample
+    // selected parts of a material for later post render composition.
     check_success(be_glsl->set_option("df_handle_slot_mode", "none") == 0);
-    check_success(be_glsl->set_option("libbsdf_flags_in_bsdf_data",
-        options.enable_bsdf_flags ? "on" : "off") == 0);
+
+    check_success(be_glsl->set_option("libbsdf_flags_in_bsdf_data", "off") == 0);
 
     mi::base::Handle<mi::neuraylib::ILink_unit> link_unit(
         be_glsl->create_link_unit(transaction, context));
@@ -1782,7 +1421,7 @@ const mi::neuraylib::ITarget_code* generate_glsl_code(
         thin_walled_value = thin_walled_bool->get_value();
     }
 
-    // Back faces could be different for thin walled materials
+    // Backfaces could be different for thin walled materials
     bool need_backface_bsdf = false;
     bool need_backface_edf = false;
     bool need_backface_emission_intensity = false;
@@ -1853,13 +1492,6 @@ const mi::neuraylib::ITarget_code* generate_glsl_code(
         compiled_material, &cutout_opacity_function_desc, 1, context);
     check_success(print_messages(context));
 
-    // In class compilation mode each material has an argument block which contains the dynamic parameters.
-    // We need the material's argument block index later when creating the matching Vulkan buffer for
-    // querying the correct argument block from the target code. The target code contains an argument block
-    // for each material, so we need the index to query the correct one.
-    // In this example we only support a single material at a time.
-    argument_block_index = function_descs[0].argument_block_index;
-
     // Generate GLSL code
     auto t0 = std::chrono::steady_clock::now();
     mi::base::Handle<const mi::neuraylib::ITarget_code> target_code(
@@ -1900,8 +1532,6 @@ void print_usage(char const* prog_name)
         << "  --hdr <path>                hdr image file used for the environment map\n"
         << "                              (default: nvidia/sdk_examples/resources/environment.hdr)\n"
         << "  --hdr_intensity <value>     intensity of the environment map (default: 1.0)\n"
-        << "  --nocc                      don't compile the material using class compilation\n"
-        << "  --tex_res <num>             size of the texture results cache\n"
         << "  --enable_ro_segment         enable the read-only data segment\n"
         << "  --disable_ssbo              disable use of an ssbo for constants\n"
         << "  --max_const_data <size>     set the maximum size of constants in bytes in the\n"
@@ -1911,17 +1541,12 @@ void print_usage(char const* prog_name)
         << "  --vkdebug                   enable the Vulkan validation layers\n"
         << "  --no_shader_opt             disables shader SPIR-V optimization\n"
         << "  --dump_glsl                 outputs the generated GLSL target code to a file\n"
-        << "  --hide_gui                  hide the settings gui. Can be toggled with SPACE\n"
-        << "  --allowed_scatter_mode <m>  limits the allowed scatter mode to \"none\", \"reflect\",\n"
-        << "                              \"transmit\" or \"reflect_and_transmit\"\n"
-        << "                              (default: restriction disabled)"
         << std::endl;
 
     exit(EXIT_FAILURE);
 }
 
-void parse_command_line(int argc, char* argv[], Options& options,
-    bool& print_version_and_exit, mi::examples::mdl::Configure_options& mdl_configure_options)
+void parse_command_line(int argc, char* argv[], Options& options, bool& print_version_and_exit)
 {
     for (int i = 1; i < argc; ++i)
     {
@@ -1972,11 +1597,7 @@ void parse_command_line(int argc, char* argv[], Options& options,
             else if (arg == "--hdr_intensity" && i < argc - 1)
                 options.hdr_intensity = static_cast<float>(std::atof(argv[++i]));
             else if ((arg == "-p" || arg == "--mdl_path") && i < argc - 1)
-                mdl_configure_options.additional_mdl_paths.push_back(argv[++i]);
-            else if (arg == "--nocc")
-                options.use_class_compilation = false;
-            else if (arg == "--tex_res" && i < argc - 1)
-                options.tex_results_cache_size = uint32_t(std::atoi(argv[++i]));
+                options.mdl_search_paths.push_back(argv[++i]);
             else if (arg == "--enable_ro_segment")
                 options.enable_ro_segment = true;
             else if (arg == "--disable_ssbo")
@@ -1989,27 +1610,6 @@ void parse_command_line(int argc, char* argv[], Options& options,
                 options.enable_shader_optimization = false;
             else if (arg == "--dump_glsl")
                 options.dump_glsl = true;
-            else if (arg == "--hide_gui")
-                options.hide_gui = true;
-            else if (arg == "--allowed_scatter_mode" && i < argc - 1)
-            {
-                options.enable_bsdf_flags = true;
-                std::string mode(argv[++i]);
-                if (mode == "none")
-                    options.allowed_scatter_mode = mi::neuraylib::DF_FLAGS_NONE;
-                else if (mode == "reflect")
-                    options.allowed_scatter_mode = mi::neuraylib::DF_FLAGS_ALLOW_REFLECT;
-                else if (mode == "transmit")
-                    options.allowed_scatter_mode = mi::neuraylib::DF_FLAGS_ALLOW_TRANSMIT;
-                else if (mode == "reflect_and_transmit")
-                    options.allowed_scatter_mode =
-                        mi::neuraylib::DF_FLAGS_ALLOW_REFLECT_AND_TRANSMIT;
-                else
-                {
-                    std::cout << "Unknown allowed_scatter_mode: \"" << mode << "\"" << std::endl;
-                    print_usage(argv[0]);
-                }
-            }
             else
             {
                 if (arg != "-h" && arg != "--help")
@@ -2021,18 +1621,31 @@ void parse_command_line(int argc, char* argv[], Options& options,
         else
             options.material_name = arg;
     }
+    if (options.material_name.empty())
+        options.material_name = "::app::not_available";
 }
 
 
 //------------------------------------------------------------------------------
 // Main function
 //------------------------------------------------------------------------------
+
+namespace mi { namespace examples { namespace mdl {
+
+// required for loading and unloading the SDK
+#ifdef MI_PLATFORM_WINDOWS
+    HMODULE g_dso_handle = 0;
+#else
+    void* g_dso_handle = 0;
+#endif
+
+}}}
+
 int MAIN_UTF8(int argc, char* argv[])
 {
     Options options;
     bool print_version_and_exit = false;
-    mi::examples::mdl::Configure_options configure_options;
-    parse_command_line(argc, argv, options, print_version_and_exit, configure_options);
+    parse_command_line(argc, argv, options, print_version_and_exit);
 
     // Access the MDL SDK
     mi::base::Handle<mi::neuraylib::INeuray> neuray(
@@ -2058,8 +1671,30 @@ int MAIN_UTF8(int argc, char* argv[])
     }
 
     // Configure the MDL SDK
-    if (!mi::examples::mdl::configure(neuray.get(), configure_options))
-        exit_failure("Failed to initialize the SDK.");
+    mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
+        neuray->get_api_component<mi::neuraylib::IMdl_configuration>());
+
+    // add the search paths for MDL module and resource resolution outside of MDL modules
+    for (size_t i = 0, n = options.mdl_search_paths.size(); i < n; ++i)
+    {
+        if (mdl_config->add_mdl_path(options.mdl_search_paths[i].c_str()) != 0 ||
+            mdl_config->add_resource_path(options.mdl_search_paths[i].c_str()) != 0)
+        {
+            fprintf(stderr,
+                    "Warning: Failed to set MDL path \"%s\".\n",
+                    options.mdl_search_paths[i].c_str());
+        }
+    }
+
+    // load image plugins for texture loading
+    if (mi::examples::mdl::load_plugin(neuray.get(), "nv_openimageio" MI_BASE_DLL_FILE_EXT) != 0)
+    {
+        exit_failure("Failed to load the nv_openimageio plugin.");
+    }
+    if (mi::examples::mdl::load_plugin(neuray.get(), "dds" MI_BASE_DLL_FILE_EXT) != 0)
+    {
+        exit_failure("Failed to load the dds plugin.");
+    }
 
     // Start the MDL SDK
     mi::Sint32 result = neuray->start();
@@ -2090,20 +1725,36 @@ int MAIN_UTF8(int argc, char* argv[])
             mdl_factory->create_execution_context());
         
         {
+            // Load a default material from a string module
+            std::string default_module = "::app";
+            std::string default_material = "not_available";
+            static const char* default_module_src =
+                "mdl 1.6;\n"
+                "import df::*;\n"
+                "export material not_available() = material(\n"
+                "    surface: material_surface(\n"
+                "        df::diffuse_reflection_bsdf(\n"
+                "            tint: color(0.8, 0.0, 0.8)\n"
+                "        )\n"
+                "    )"
+                ");";
+            mi::base::Handle<const mi::IString> module_db_name(
+                mdl_factory->get_db_module_name(default_module.c_str()));
+            mdl_impexp_api->load_module_from_string(
+                transaction.get(), default_module.c_str(), default_module_src, context.get());
+
             // Load and compile material, and generate GLSL code
-            mi::base::Handle<const mi::neuraylib::IAnnotation_list> material_parameter_annotations;
             mi::base::Handle<mi::neuraylib::IFunction_call> material_instance(
                 create_material_instance(mdl_impexp_api.get(), mdl_factory.get(),
-                    transaction.get(), context.get(), options.material_name, material_parameter_annotations));
+                    transaction.get(), context.get(), options.material_name));
 
             mi::base::Handle<mi::neuraylib::ICompiled_material> compiled_material(
                 compile_material_instance(mdl_factory.get(), transaction.get(),
-                    material_instance.get(), context.get(), options.use_class_compilation));
+                    material_instance.get(), context.get()));
 
-            mi::Size argument_block_index;
             mi::base::Handle<const mi::neuraylib::ITarget_code> target_code(
                 generate_glsl_code(compiled_material.get(), mdl_backend_api.get(),
-                    transaction.get(), context.get(), options, argument_block_index));
+                    transaction.get(), context.get(), options));
 
             if (options.dump_glsl)
             {
@@ -2114,7 +1765,7 @@ int MAIN_UTF8(int argc, char* argv[])
 
             // Start application
             mi::examples::vk::Vulkan_example_app::Config app_config;
-            app_config.window_title = "MDL SDK DF Vulkan Example";
+            app_config.window_title = "MDL Standalone Render for MaterialX";
             app_config.image_width = options.res_x;
             app_config.image_height = options.res_y;
             app_config.image_count = options.num_images;
@@ -2124,10 +1775,7 @@ int MAIN_UTF8(int argc, char* argv[])
             app_config.enable_validation_layers = options.enable_validation_layers;
             app_config.enable_descriptor_indexing = true;
 
-            Df_vulkan_app app(
-                transaction, mdl_impexp_api, image_api, target_code,
-                compiled_material, material_parameter_annotations,
-                argument_block_index, options);
+            Df_vulkan_app app(transaction, mdl_impexp_api, image_api, target_code, compiled_material,options);
             app.run(app_config);
         }
 

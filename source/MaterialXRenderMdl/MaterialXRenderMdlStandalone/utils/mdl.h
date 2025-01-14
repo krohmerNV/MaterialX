@@ -61,7 +61,6 @@
 namespace mi { namespace examples { namespace mdl
 {
     // have to be defined in a linked unit (see example_shared.cpp)
-    extern mi::base::Handle<mi::base::ILogger> g_logger;
 #ifdef MI_PLATFORM_WINDOWS
     extern HMODULE g_dso_handle;        // Pointer to the DSO handle. Cached here for unload().
 #else
@@ -90,73 +89,6 @@ namespace mi { namespace examples { namespace mdl
     /// are used with different kinds of build setups and binary packaging, it makes sense to wrap
     /// the handing of special cases to support the different packagings in one function.
     mi::Sint32 load_plugin(mi::neuraylib::INeuray* neuray, const char* path);
-
-    /// Returns the root directory of the examples.
-    ///
-    /// The root directory of the examples is the one that contains the "mdl/nvidia/sdk_examples"
-    /// directory. The following steps are performed to find it:
-    /// - If the environment variable MDL_SAMPLES_ROOT is set, it is returned (without checking for
-    ///   the existence of the subdirectory mentioned above).
-    /// - Starting from the directory of the executable all parent directories are considered in
-    ///   turn bottom-up, checked for the existence of the subdirectory mentioned above, and the
-    ///   first successful directory is returned.
-    /// - If that subdirectory of the source tree exists, it is returned.
-    /// - Finally, the current working directory is returned (as ".").
-    std::string get_examples_root();
-
-    /// Returns a directory that contains ::nvidia::core_definitions and ::nvida::axf_to_mdl.
-    ///
-    /// Might also return "." if that directory is the "mdl" subdirectory of #get_examples_root()
-    /// and no extra handling is required.
-    ///
-    /// The following steps are performed to find it:
-    /// - If the environment variable MDL_SRC_SHADERS_MDL is set, it is returned (without checking
-    //    for the existence of the MDL modules mentioned above).
-    /// - If that subdirectory of the source tree exists, it is returned.
-    /// - Finally, the current working directory is returned (as ".").
-    std::string get_src_shaders_mdl();
-
-    /// Input to the \c configure function. Allows to control the search path setup for the examples
-    /// as well as to control the loaded plugins.
-    struct Configure_options
-    {
-        Configure_options();
-
-        /// additional search paths that are added after admin/user and the example search paths
-        std::vector<std::string> additional_mdl_paths;
-
-        /// set to false to not add the admin space search paths. It's recommend to leave this true.
-        bool add_admin_space_search_paths;
-
-        /// set to false to not add the user space search paths. It's recommend to leave this true.
-        bool add_user_space_search_paths;
-
-        bool add_example_search_path;      ///< set to false to not add the example content mdl path
-        bool skip_loading_plugins;         ///< set to true to disable (optional) plugin loading
-
-        bool single_threaded;              ///< if true, render on one thread only
-
-        /// set a custom logger if we want to use a different one than Default_logger
-        mi::base::ILogger* logger;
-    };
-
-    /// Configures the MDL SDK by installing a default logger, setting the default MDL search path,
-    /// and loading the OpenImageIO and DDS image plugins. This done by many examples so it makes
-    /// sense to bundle this here in one place and focus on the actual example.
-    ///
-    /// \param neuray                   pointer to the main MDL SDK interface
-    /// \param options                  see \Configure_options fields
-    bool configure(
-        mi::neuraylib::INeuray* neuray,
-        Configure_options options = Configure_options());
-
-    /// Default logger for the MDL SDK examples.
-    ///
-    /// This logger is similar to the default logger of the MDL SDK. The only difference is that, on
-    /// Windows, it does \em not convert the UTF8 log messages to UTF16 when stderr is connected to
-    /// the console. This conversion step is wrong for the MDL SDK examples, since they explicitly
-    /// switch the console to UTF8.
-    class Default_logger;
 
     /// Many examples accept material names as command line arguments.
     /// In general, the expected input is fully-qualified absolute MDL material name of the form:
@@ -204,16 +136,6 @@ namespace mi { namespace examples { namespace mdl
     // --------------------------------------------------------------------------------------------
     // Implementations
     // --------------------------------------------------------------------------------------------
-
-    inline Configure_options::Configure_options()
-        : additional_mdl_paths()
-        , add_admin_space_search_paths(true)
-        , add_user_space_search_paths(true)
-        , add_example_search_path(true)
-        , skip_loading_plugins(false)
-        , single_threaded(false)
-        , logger(nullptr)
-    {}
 
     // printf() format specifier for arguments of type LPTSTR (Windows only).
     #ifdef MI_PLATFORM_WINDOWS
@@ -310,10 +232,6 @@ namespace mi { namespace examples { namespace mdl
 
     inline bool unload()
     {
-        // Reset the global logger whose destructor might be defined in the library we are going to
-        // unload now.
-        g_logger.reset();
-
     #ifdef MI_PLATFORM_WINDOWS
         BOOL result = FreeLibrary(g_dso_handle);
         if( !result) {
@@ -405,92 +323,6 @@ namespace mi { namespace examples { namespace mdl
         }
 
     };
-
-    // --------------------------------------------------------------------------------------------
-
-    inline bool configure(
-        mi::neuraylib::INeuray* neuray,
-        Configure_options options)
-    {
-        if (!neuray)
-        {
-            fprintf(stderr, "INeuray is invalid. Loading the SDK probably failed before.");
-            return false;
-        }
-
-        mi::base::Handle<mi::neuraylib::ILogging_configuration> logging_config(
-            neuray->get_api_component<mi::neuraylib::ILogging_configuration>());
-        mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
-            neuray->get_api_component<mi::neuraylib::IMdl_configuration>());
-
-        // set user defined or default logger
-        if (options.logger)
-        {
-            logging_config->set_receiving_logger(options.logger);
-        }
-        else
-        {
-            logging_config->set_receiving_logger(mi::base::make_handle(new Default_logger()).get());
-        }
-        g_logger = logging_config->get_forwarding_logger();
-
-        // collect the search paths to add
-        std::vector<std::string> mdl_paths(options.additional_mdl_paths);
-
-        if (options.add_example_search_path)
-        {
-            const std::string example_search_path1 = mi::examples::mdl::get_examples_root() + "/mdl";
-            if (example_search_path1 == "./mdl")
-            {
-                fprintf(stderr,
-                    "MDL Examples path was not found, "
-                    "consider setting the environment variable MDL_SAMPLES_ROOT.");
-            }
-            mdl_paths.push_back(example_search_path1);
-
-            const std::string example_search_path2 = mi::examples::mdl::get_src_shaders_mdl();
-            if (example_search_path2 != ".")
-                mdl_paths.push_back(example_search_path2);
-        }
-
-        // add the search paths for MDL module and resource resolution outside of MDL modules
-        for (size_t i = 0, n = mdl_paths.size(); i < n; ++i) {
-            if (mdl_config->add_mdl_path(mdl_paths[i].c_str()) != 0 ||
-                    mdl_config->add_resource_path(mdl_paths[i].c_str()) != 0) {
-                fprintf(stderr,
-                    "Warning: Failed to set MDL path \"%s\".\n",
-                    mdl_paths[i].c_str());
-            }
-        }
-
-        // add user and system search paths with lowest priority
-        if (options.add_user_space_search_paths)
-        {
-            mdl_config->add_mdl_user_paths();
-        }
-        if (options.add_admin_space_search_paths)
-        {
-            mdl_config->add_mdl_system_paths();
-        }
-
-        // load plugins if not skipped
-        if (options.skip_loading_plugins)
-            return true;
-
-        if (load_plugin(neuray, "nv_openimageio" MI_BASE_DLL_FILE_EXT) != 0)
-        {
-            fprintf(stderr, "Fatal: Failed to load the nv_openimageio plugin.\n");
-            return false;
-        }
-
-        if (load_plugin(neuray, "dds" MI_BASE_DLL_FILE_EXT) != 0)
-        {
-            fprintf(stderr, "Fatal: Failed to load the dds plugin.\n");
-            return false;
-        }
-
-        return true;
-    }
 
     // --------------------------------------------------------------------------------------------
 

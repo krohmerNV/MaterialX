@@ -26,12 +26,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *****************************************************************************/
 
-// examples/mdl_sdk/shared/example_vulkan_shared.h
-//
-// Code shared by all Vulkan examples.
+// A basic Vulkan renderer
 
-#ifndef EXAMPLE_VULKAN_SHARED_H
-#define EXAMPLE_VULKAN_SHARED_H
+#ifndef VULKAN_BASE_APPLICATION_H
+#define VULKAN_BASE_APPLICATION_H
 
 #include <memory>
 #include <vector>
@@ -173,19 +171,19 @@ protected:
     virtual void render(VkCommandBuffer command_buffer, uint32_t frame_index, uint32_t image_index) = 0;
 
     // Called when a keyboard key is pressed or released.
-    virtual void key_callback(int key, int action, int mods) {}
+    virtual void key_callback(int /*key*/, int /*action*/, int /*mods*/) {}
 
     // Called when a mouse button is pressed or released.
-    virtual void mouse_button_callback(int button, int action) {}
+    virtual void mouse_button_callback(int /*button*/, int /*action*/) {}
 
     // Called when the mouse moves.
-    virtual void mouse_move_callback(float pos_x, float pos_y) {}
+    virtual void mouse_move_callback(float /*pos_x*/, float /*pos_y*/) {}
 
     // Called when the scrolling event occurs (e.g. mouse wheel or touch pad).
-    virtual void mouse_scroll_callback(float offset_x, float offset_y) {}
+    virtual void mouse_scroll_callback(float /*offset_x*/, float /*offset_y*/) {}
 
     // Called when the window is resized.
-    virtual void resized_callback(uint32_t width, uint32_t height) {}
+    virtual void resized_callback(uint32_t /*width*/, uint32_t /*height*/) {}
 
     // Request to save a screenshot the next frame.
     void request_screenshot() { m_screenshot_requested = true; }
@@ -322,6 +320,26 @@ struct Vulkan_buffer
     }
 };
 
+struct Vulkan_environment_map
+{
+    void create(
+        VkDevice device, VkPhysicalDevice physical_device, VkCommandPool command_pool, VkQueue graphics_queue, 
+        mi::neuraylib::IImage_api* image_api, mi::neuraylib::ITransaction* transaction,
+        const std::string& filePath);
+
+    void destroy(VkDevice device)
+    {
+        sampling_data_buffer.destroy(device);
+        texture.destroy(device);
+        vkDestroySampler(device, sampler, nullptr);
+    }
+
+    Vulkan_texture texture;
+    Vulkan_buffer sampling_data_buffer;
+    VkSampler sampler = nullptr;
+    float environment_inv_integral = 1.0f;
+};
+
 
 class Staging_buffer
 {
@@ -442,6 +460,16 @@ const char* vkresult_to_str(VkResult result);
 
 // Convert some of the common formats to string.
 const char* vkformat_to_str(VkFormat format);
+
+
+Vulkan_buffer create_storage_buffer(
+    VkDevice device,
+    VkPhysicalDevice physical_device,
+    VkQueue queue,
+    VkCommandPool command_pool,
+    const void* buffer_data,
+    mi::Size buffer_size);
+
 
 } // namespace mi::examples::vk
 

@@ -41,10 +41,11 @@
 #include <vector>
 
 #include <mi/mdl_sdk.h>
-#include "utils/io.h"
-#include "utils/mdl.h"
-#include "utils/os.h"
-#include "utils/strings.h"
+#include "io.h"
+#include "mdl.h"
+#include "os.h"
+#include "strings.h"
+#include "log.h"
 
 
 /// called to abort the execution of an example in case of failure.

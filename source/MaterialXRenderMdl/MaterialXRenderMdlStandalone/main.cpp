@@ -30,8 +30,9 @@
  //
  // Simple Vulkan renderer using compiled BSDFs with a material parameter editor GUI.
 
-#include "example_shared.h"
-#include "vulkan_base_application.h"
+#include "mdl_generator.h"
+#include "utils/example_shared.h"
+#include "utils/vulkan_base_application.h"
 
 #include <chrono>
 #include <numeric>
@@ -78,11 +79,16 @@ struct Options
     bool enable_ro_segment = false;
     bool disable_ssbo = false;
     uint32_t max_const_data = 1024;
-    std::string material_name = "::app::not_available";
+    std::string material_name = "";
     bool enable_validation_layers = false;
     bool enable_shader_optimization = true;
+    bool dump_mdl = false;
     bool dump_glsl = false;
     std::vector<std::string> mdl_search_paths = {};
+    std::vector<std::string> mtlx_paths = {};
+    std::vector<std::string> mtlx_libraries = {};
+    MaterialX::GenMdlOptions::MdlVersion mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
+    mi::examples::log::Level log_level = mi::examples::log::Level::Verbose;
 };
 
 using Vulkan_texture = mi::examples::vk::Vulkan_texture;
@@ -1257,26 +1263,15 @@ void Df_vulkan_app::write_accum_images_to_file()
 // MDL material compilation helpers
 //------------------------------------------------------------------------------
 mi::neuraylib::IFunction_call* create_material_instance(
-    mi::neuraylib::IMdl_impexp_api* mdl_impexp_api,
     mi::neuraylib::IMdl_factory* mdl_factory,
     mi::neuraylib::ITransaction* transaction,
-    mi::neuraylib::IMdl_execution_context* context,
-    const std::string& material_name)
+    const std::string& qualified_module_name,
+    const std::string& material_simple_name)
 {
-    // Split material name into module and simple material name
-    std::string module_name, material_simple_name;
-    mi::examples::mdl::parse_cmd_argument_material_name(
-        material_name, module_name, material_simple_name);
-
-    // Load module
-    mdl_impexp_api->load_module(transaction, module_name.c_str(), context);
-    if (!print_messages(context))
-        exit_failure("Loading module '%s' failed.", module_name.c_str());
-
     // Get the database name for the module we loaded and check if
     // the module exists in the database.
     mi::base::Handle<const mi::IString> module_db_name(
-        mdl_factory->get_db_definition_name(module_name.c_str()));
+        mdl_factory->get_db_definition_name(qualified_module_name.c_str()));
     mi::base::Handle<const mi::neuraylib::IModule> module(
         transaction->access<mi::neuraylib::IModule>(module_db_name->get_c_str()));
     if (!module)
@@ -1515,7 +1510,21 @@ void print_usage(char const* prog_name)
         << "Usage: " << prog_name << " [options] [<material_name|full_mdle_path>]\n"
         << "Options:\n"
         << "  -h|--help                   print this text and exit\n"
-        << "  -v|--version                print the MDL SDK version string and exit\n"
+
+        << "  --mtlx_path <path>          Specify an additional absolute search path location\n"
+           "                              (e.g. '/projects/MaterialX'). This path will be queried when\n"
+           "                              locating standard data libraries, XInclude references, and\n"
+           "                              referenced images. Can occur multiple times.\n"
+
+        << "  --mtlx_library <rel_path>   Specify an additional relative path to a custom data\n"
+           "                              library folder (e.g. 'libraries/custom'). MaterialX files\n"
+           "                              at the root of this folder will be included in all content\n"
+           "                              documents. Can occur multiple times.\n"
+
+        << "  --mtlx_to_mdl <version>     Specify the MDL version to generate.\n"
+           "                              Supported values are \"1.6\", \"1.7\", \"1.8\", \"1.9\", ... and\n"
+           "                              \"latest\". (default: \"latest\")\n"
+
         << "  --nowin                     don't show interactive display\n"
         << "  --res <res_x> <res_y>       resolution (default: 1024x768)\n"
         << "  --numimg <n>                swapchain image count (default: 3)\n"
@@ -1541,22 +1550,50 @@ void print_usage(char const* prog_name)
         << "  --vkdebug                   enable the Vulkan validation layers\n"
         << "  --no_shader_opt             disables shader SPIR-V optimization\n"
         << "  --dump_glsl                 outputs the generated GLSL target code to a file\n"
+        << "  --dump_mdl                  outputs the MDL code generated from MaterialX to a file\n"
+        << "  --info                      limit log output to level 'info' and higher\n"
+        << "  --warn                      limit log output to level 'warning' and higher\n"
+        << "  --error                     limit log output to level 'error'\n"
         << std::endl;
 
     exit(EXIT_FAILURE);
 }
 
-void parse_command_line(int argc, char* argv[], Options& options, bool& print_version_and_exit)
+void parse_command_line(int argc, char* argv[], Options& options)
 {
     for (int i = 1; i < argc; ++i)
     {
         std::string arg(argv[i]);
         if (arg[0] == '-')
         {
-            if (arg == "-v" || arg == "--version")
-                print_version_and_exit = true;
-            else if (arg == "--nowin")
+            if (arg == "--nowin")
                 options.no_window = true;
+
+            else if (arg == "--mtlx_path" && i < argc - 1)
+            {
+                std::string path(argv[++i]);
+                options.mtlx_paths.push_back(mi::examples::io::normalize(path));
+            }
+            else if (arg == "--mtlx_library" && i < argc - 1)
+            {
+                std::string path(argv[++i]);
+                options.mtlx_libraries.push_back(mi::examples::io::normalize(path));
+            }
+            else if (arg == "--mtlx_to_mdl" && i < argc - 1)
+            {
+                std::string version(argv[++i]);
+                if (version != "1.6")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_6;
+                else if (version != "1.7")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_7;
+                else if (version != "1.8")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_8;
+                else if (version != "1.9")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_9;
+                else
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
+            }
+
             else if (arg == "--res" && i < argc - 2)
             {
                 options.res_x = std::max(atoi(argv[++i]), 1);
@@ -1608,8 +1645,17 @@ void parse_command_line(int argc, char* argv[], Options& options, bool& print_ve
                 options.enable_validation_layers = true;
             else if (arg == "--no_shader_opt")
                 options.enable_shader_optimization = false;
+            else if (arg == "--dump_mdl")
+                options.dump_mdl = true;
             else if (arg == "--dump_glsl")
                 options.dump_glsl = true;
+
+            else if (arg == "--info")
+                options.log_level = mi::examples::log::Level::Info;
+            else if (arg == "--warn")
+                options.log_level = mi::examples::log::Level::Warning;
+            else if (arg == "--error")
+                options.log_level = mi::examples::log::Level::Error;
             else
             {
                 if (arg != "-h" && arg != "--help")
@@ -1621,8 +1667,6 @@ void parse_command_line(int argc, char* argv[], Options& options, bool& print_ve
         else
             options.material_name = arg;
     }
-    if (options.material_name.empty())
-        options.material_name = "::app::not_available";
 }
 
 
@@ -1630,22 +1674,34 @@ void parse_command_line(int argc, char* argv[], Options& options, bool& print_ve
 // Main function
 //------------------------------------------------------------------------------
 
-namespace mi { namespace examples { namespace mdl {
+namespace mi
+{
+namespace examples
+{
 
-// required for loading and unloading the SDK
-#ifdef MI_PLATFORM_WINDOWS
-    HMODULE g_dso_handle = 0;
-#else
-    void* g_dso_handle = 0;
-#endif
+namespace mdl
+{
+    // required for loading and unloading the SDK
+    #ifdef MI_PLATFORM_WINDOWS
+        HMODULE g_dso_handle = 0;
+    #else
+        void* g_dso_handle = 0;
+    #endif
+} // namespace mdl
 
-}}}
+namespace log
+{
+    Level s_Level;
+}
+
+} // namespace examples
+} // namespace mi
 
 int MAIN_UTF8(int argc, char* argv[])
 {
     Options options;
-    bool print_version_and_exit = false;
-    parse_command_line(argc, argv, options, print_version_and_exit);
+    parse_command_line(argc, argv, options);
+    mi::examples::log::s_Level = options.log_level;
 
     // Access the MDL SDK
     mi::base::Handle<mi::neuraylib::INeuray> neuray(
@@ -1653,37 +1709,23 @@ int MAIN_UTF8(int argc, char* argv[])
     if (!neuray.is_valid_interface())
         exit_failure("Failed to load the SDK.");
 
-    // Handle the --version flag
-    if (print_version_and_exit)
-    {
-        // Print library version information
-        mi::base::Handle<const mi::neuraylib::IVersion> version(
-            neuray->get_api_component<const mi::neuraylib::IVersion>());
-        std::cout << version->get_string() << "\n";
-
-        // Free the handles and unload the MDL SDK
-        version = nullptr;
-        neuray = nullptr;
-        if (!mi::examples::mdl::unload())
-            exit_failure("Failed to unload the SDK.");
-
-        exit_success();
-    }
+    // install a custom logger to have control over the output
+    mi::base::Handle<mi::neuraylib::ILogging_configuration> logging_configuration(
+        neuray->get_api_component<mi::neuraylib::ILogging_configuration>());
+    std::unique_ptr<mi::examples::log::ExampleLogger> logger = std::make_unique<mi::examples::log::ExampleLogger>();
+    logging_configuration->set_receiving_logger(logger.get());
 
     // Configure the MDL SDK
     mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
         neuray->get_api_component<mi::neuraylib::IMdl_configuration>());
 
     // add the search paths for MDL module and resource resolution outside of MDL modules
+    // also add the `mdl` folder next the binary as search path
+    options.mdl_search_paths.push_back(mi::examples::io::get_executable_folder() + "/mdl");
     for (size_t i = 0, n = options.mdl_search_paths.size(); i < n; ++i)
     {
-        if (mdl_config->add_mdl_path(options.mdl_search_paths[i].c_str()) != 0 ||
-            mdl_config->add_resource_path(options.mdl_search_paths[i].c_str()) != 0)
-        {
-            fprintf(stderr,
-                    "Warning: Failed to set MDL path \"%s\".\n",
-                    options.mdl_search_paths[i].c_str());
-        }
+        mdl_config->add_mdl_path(options.mdl_search_paths[i].c_str());
+        mdl_config->add_resource_path(options.mdl_search_paths[i].c_str());
     }
 
     // load image plugins for texture loading
@@ -1723,30 +1765,92 @@ int MAIN_UTF8(int argc, char* argv[])
 
         mi::base::Handle<mi::neuraylib::IMdl_execution_context> context(
             mdl_factory->create_execution_context());
-        
+
+        mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
+            neuray->get_api_component<mi::neuraylib::IMdl_configuration>());
+
         {
-            // Load a default material from a string module
-            std::string default_module = "::app";
-            std::string default_material = "not_available";
-            static const char* default_module_src =
-                "mdl 1.6;\n"
-                "import df::*;\n"
-                "export material not_available() = material(\n"
-                "    surface: material_surface(\n"
-                "        df::diffuse_reflection_bsdf(\n"
-                "            tint: color(0.8, 0.0, 0.8)\n"
-                "        )\n"
-                "    )"
-                ");";
-            mi::base::Handle<const mi::IString> module_db_name(
-                mdl_factory->get_db_module_name(default_module.c_str()));
-            mdl_impexp_api->load_module_from_string(
-                transaction.get(), default_module.c_str(), default_module_src, context.get());
+            // corresponds to module path within an MDL search path 
+            std::string qualified_module_name;
+            // the function name, i.e., within the given module
+            std::string material_simple_name;
+
+            // check if the selected material is a MaterialX material
+            if (std::strstr(options.material_name.c_str(), ".mtlx") != nullptr)
+            {
+                // Note, this section is all that is needed to add MaterialX support to an MDL-based renderer
+                Mdl_generator gen;
+                gen.set_mdl_version(options.mdl_target_version);
+                for (const auto& p : options.mtlx_paths)
+                    gen.add_materialx_search_path(p);
+                for (const auto& l : options.mtlx_libraries)
+                    gen.add_materialx_library(l);
+                gen.set_source(options.material_name, "");
+
+                Mdl_generator::Result result;
+                if (gen.generate(mdl_config.get(), result))
+                {
+                    qualified_module_name = "::app::generated";
+                    material_simple_name = result.generated_mdl_name;
+                    if (mdl_impexp_api->load_module_from_string(
+                            transaction.get(), qualified_module_name.c_str(), result.generated_mdl_code.c_str(), context.get()) < 0)
+                    {
+                        mi::examples::log::error("Failed to load the generated MDL code from: " + options.material_name);
+                        mi::examples::log::context_messages(context.get());
+                        qualified_module_name.clear();
+                        material_simple_name.clear();
+                    }
+                    else if (options.dump_mdl)
+                    {
+                        std::string dump_mdl_path = mi::examples::io::get_working_directory() + "/generated.mdl";
+                        mi::examples::log::info("Dumping generated MDL module to: \"%s\"", dump_mdl_path.c_str());
+                        std::ofstream file_stream(dump_mdl_path);
+                        file_stream.write(result.generated_mdl_code.c_str(), result.generated_mdl_code.length());
+                        file_stream.close();
+                    }
+                }
+            }
+            // fall back to load a regular MDL module
+            else
+            {
+                // Split material name into module and simple material name
+                mi::examples::mdl::parse_cmd_argument_material_name(
+                    options.material_name, qualified_module_name, material_simple_name);
+
+                // Load the module from the MDL search path
+                if (mdl_impexp_api->load_module(transaction.get(), qualified_module_name.c_str(), context.get()) < 0)
+                {
+                    mi::examples::log::error("Failed to load material: " + options.material_name);
+                    mi::examples::log::context_messages(context.get());
+                    qualified_module_name.clear();
+                    material_simple_name.clear();
+                }
+            }
+
+            // Load a default material from string
+            if (qualified_module_name.empty() || material_simple_name.empty())
+            {
+                qualified_module_name = "::app";
+                material_simple_name = "not_available";
+                static const char* module_src =
+                    "mdl 1.6;\n"
+                    "import ::df::*;\n"
+                    "export material not_available() = material(\n"
+                    "    surface: material_surface(\n"
+                    "        df::diffuse_reflection_bsdf(\n"
+                    "            tint: color(0.8, 0.0, 0.8)\n"
+                    "        )\n"
+                    "    )"
+                    ");";
+
+                mdl_impexp_api->load_module_from_string(
+                    transaction.get(), qualified_module_name.c_str(), module_src, context.get());
+            }
 
             // Load and compile material, and generate GLSL code
             mi::base::Handle<mi::neuraylib::IFunction_call> material_instance(
-                create_material_instance(mdl_impexp_api.get(), mdl_factory.get(),
-                    transaction.get(), context.get(), options.material_name));
+                create_material_instance(mdl_factory.get(), transaction.get(),
+                    qualified_module_name, material_simple_name));
 
             mi::base::Handle<mi::neuraylib::ICompiled_material> compiled_material(
                 compile_material_instance(mdl_factory.get(), transaction.get(),
@@ -1758,9 +1862,11 @@ int MAIN_UTF8(int argc, char* argv[])
 
             if (options.dump_glsl)
             {
-                std::cout << "Dumping GLSL target code to target_code.glsl\n";
-                std::ofstream file_stream("target_code.glsl");
+                std::string dump_glsl_path = mi::examples::io::get_working_directory() + "/target_code.glsl";
+                mi::examples::log::info("Dumping GLSL target code to: \"%s\"", dump_glsl_path.c_str());
+                std::ofstream file_stream(dump_glsl_path);
                 file_stream.write(target_code->get_code(), target_code->get_code_size());
+                file_stream.close();
             }
 
             // Start application
@@ -1781,6 +1887,10 @@ int MAIN_UTF8(int argc, char* argv[])
 
         transaction->commit();
     }
+
+    // remove custom logger
+    logging_configuration->set_receiving_logger(nullptr);
+    logger.reset();
 
     // Shut down the MDL SDK
     if (neuray->shutdown() != 0)

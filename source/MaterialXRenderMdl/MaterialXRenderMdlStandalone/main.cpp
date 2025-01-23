@@ -69,8 +69,9 @@ struct Options
     uint32_t samples_per_pixel = 4096;
     uint32_t samples_per_iteration = 8;
     uint32_t max_path_length = 4;
-    float cam_fov = 96.0f;
+    float cam_fov = 45.0f;
     mi::Float32_3 cam_pos = { 0.0f, 0.0f, 3.0f };
+    mi::Float32_3 cam_lookat = { 0.0f, 0.0f, 0.0f };
     mi::Float32_3 light_pos = { 10.0f, 0.0f, 5.0f };
     mi::Float32_3 light_intensity = { 1.0f, 0.95f, 0.9f };
     bool light_enabled = false;
@@ -82,8 +83,8 @@ struct Options
     std::string material_name = "";
     bool enable_validation_layers = false;
     bool enable_shader_optimization = true;
-    bool dump_mdl = false;
-    bool dump_glsl = false;
+    std::string dump_mdl = "";
+    std::string dump_glsl = "";
     std::vector<std::string> mdl_search_paths = {};
     std::vector<std::string> mtlx_paths = {};
     std::vector<std::string> mtlx_libraries = {};
@@ -503,8 +504,9 @@ void Df_vulkan_app::init_resources()
 
     // Setup camera
     const mi::Float32_3 camera_pos = m_options.cam_pos;
-    mi::Float32_3 inv_dir = camera_pos / mi::math::length(camera_pos);
-    m_camera_state.base_distance = mi::math::length(camera_pos);
+    mi::Float32_3 inv_dir = camera_pos - m_options.cam_lookat;
+    m_camera_state.base_distance = mi::math::length(inv_dir);
+    inv_dir = inv_dir / m_camera_state.base_distance;
     m_camera_state.phi = mi::math::atan2(inv_dir.x, inv_dir.z);
     m_camera_state.theta = mi::math::acos(inv_dir.y);
     m_camera_state.zoom = 0;
@@ -1236,7 +1238,14 @@ void Df_vulkan_app::write_accum_images_to_file()
         mi::base::Handle<mi::neuraylib::ITile> tile(canvas->get_tile());
         std::memcpy(tile->get_data(), pixels.data(), pixels.size());
         canvas = m_image_api->convert(canvas.get(), "Rgb_fp");
-        m_mdl_impexp_api->export_canvas(filename.c_str(), canvas.get());
+        mi::base::Handle<mi::IMap> export_options(m_transaction->create<mi::IMap>("Map<Interface>"));
+        mi::base::Handle<mi::IUint32> quality(m_transaction->create<mi::IUint32>("Uint32"));
+        quality->set_value(100);
+        export_options->insert("jpg:quality", quality.get());
+        mi::base::Handle<mi::IBoolean> force_default_gamma(m_transaction->create<mi::IBoolean>("Boolean"));
+        force_default_gamma->set_value(true);
+        export_options->insert("force_default_gamma", force_default_gamma.get());
+        m_mdl_impexp_api->export_canvas(filename.c_str(), canvas.get(), export_options.get());
     };
 
     uint32_t image_bpp = mi::examples::vk::get_image_format_bpp(g_accumulation_texture_format);
@@ -1245,17 +1254,12 @@ void Df_vulkan_app::write_accum_images_to_file()
         m_accum_image.image, m_image_width, m_image_height, image_bpp,
         VK_IMAGE_LAYOUT_GENERAL, false);
 
-    std::string filename_base = m_options.output_file;
-    std::string filename_ext;
+    std::string output_path = m_options.output_file;
+    if (!mi::examples::io::is_absolute_path(output_path))
+        output_path = mi::examples::io::get_working_directory() + "/" + output_path;
 
-    size_t dot_pos = m_options.output_file.rfind('.');
-    if (dot_pos != std::string::npos)
-    {
-        filename_base = m_options.output_file.substr(0, dot_pos);
-        filename_ext = m_options.output_file.substr(dot_pos);
-    }
-
-    export_pixels_rgba32f(image_pixel, m_options.output_file);
+    mi::examples::log::info("Saving output image to: \"%s\"", output_path.c_str());
+    export_pixels_rgba32f(image_pixel, output_path);
 }
 
 
@@ -1525,32 +1529,44 @@ void print_usage(char const* prog_name)
            "                              Supported values are \"1.6\", \"1.7\", \"1.8\", \"1.9\", ... and\n"
            "                              \"latest\". (default: \"latest\")\n"
 
-        << "  --nowin                     don't show interactive display\n"
+        << "  -p|--mdl_path <path>        additional MDL search path, can occur multiple times\n"
+
+        << "  --mat <identifier>          Specify the material to render. The are multiple options:\n"
+        << "                              - <MaterialX-filepath>\n"
+        << "                              - <MaterialX-filepath>?name=<element name>\n"
+        << "                              - <MDL qualified material name>\n"
+
+        << "  --nogui                     Don't open interactive display\n"
         << "  --res <res_x> <res_y>       resolution (default: 1024x768)\n"
         << "  --numimg <n>                swapchain image count (default: 3)\n"
         << "  --device <id>               run on supported GPU <id>\n"
-        << "  -o|--output <outputfile>    image file to write result in nowin mode (default: output.exr)\n"
         << "  --spp <num>                 samples per pixel, only used for --nowin (default: 4096)\n"
         << "  --spi <num>                 samples per render loop iteration (default: 8)\n"
         << "  --max_path_length <num>     maximum path length (default: 4)\n"
+
         << "  -f|--fov <fov>              the camera field of view in degrees (default: 96.0)\n"
-        << "  --cam <x> <y> <z>           set the camera position (default: 0 0 3).\n"
-        << "                              The camera will always look towards (0, 0, 0)\n"
-        << "  -l|--light <x> <y> <z>      adds an omnidirectional light with the given position\n"
+        << "  --camera <px> <py> <pz> <fx> <fy> <fz>  Overrides the camera pose defined in the\n"
+        << "                                          scene as well as the computed one if the scene\n"
+        << "                                          has no camera. Parameters specify position and\n"
+        << "                                          focus point.\n"
+
+        << "  -l|--light <x> <y> <z>      adds an omni-directional light with the given position\n"
         << "             <r> <g> <b>      and intensity\n"
         << "  --hdr <path>                hdr image file used for the environment map\n"
         << "                              (default: nvidia/sdk_examples/resources/environment.hdr)\n"
         << "  --hdr_intensity <value>     intensity of the environment map (default: 1.0)\n"
+
         << "  --enable_ro_segment         enable the read-only data segment\n"
         << "  --disable_ssbo              disable use of an ssbo for constants\n"
         << "  --max_const_data <size>     set the maximum size of constants in bytes in the\n"
         << "                              generated code (requires read-only data segment or\n"
         << "                              ssbo, default 1024)\n"
-        << "  -p|--mdl_path <path>        additional MDL search path, can occur multiple times\n"
         << "  --vkdebug                   enable the Vulkan validation layers\n"
         << "  --no_shader_opt             disables shader SPIR-V optimization\n"
-        << "  --dump_glsl                 outputs the generated GLSL target code to a file\n"
-        << "  --dump_mdl                  outputs the MDL code generated from MaterialX to a file\n"
+
+        << "  -o|--output <outputfile>    image file to write result in nowin mode (default: output.exr)\n"
+        << "  -g|--generated              outputs the MDL code generated from MaterialX to a file\n"
+        << "  --generated_glsl            outputs the generated GLSL target code to a file\n"
         << "  --info                      limit log output to level 'info' and higher\n"
         << "  --warn                      limit log output to level 'warning' and higher\n"
         << "  --error                     limit log output to level 'error'\n"
@@ -1566,7 +1582,7 @@ void parse_command_line(int argc, char* argv[], Options& options)
         std::string arg(argv[i]);
         if (arg[0] == '-')
         {
-            if (arg == "--nowin")
+            if (arg == "--nogui")
                 options.no_window = true;
 
             else if (arg == "--mtlx_path" && i < argc - 1)
@@ -1593,7 +1609,10 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 else
                     options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
             }
-
+            else if (arg == "--mat" && i < argc - 1)
+            {
+                options.material_name = argv[++i];
+            }
             else if (arg == "--res" && i < argc - 2)
             {
                 options.res_x = std::max(atoi(argv[++i]), 1);
@@ -1613,11 +1632,14 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 options.max_path_length = std::atoi(argv[++i]);
             else if ((arg == "-f" || arg == "--fov") && i < argc - 1)
                 options.cam_fov = static_cast<float>(std::atof(argv[++i]));
-            else if (arg == "--cam" && i < argc - 3)
+            else if (arg == "--camera" && i < argc - 6)
             {
                 options.cam_pos.x = static_cast<float>(std::atof(argv[++i]));
                 options.cam_pos.y = static_cast<float>(std::atof(argv[++i]));
                 options.cam_pos.z = static_cast<float>(std::atof(argv[++i]));
+                options.cam_lookat.x = static_cast<float>(std::atof(argv[++i]));
+                options.cam_lookat.y = static_cast<float>(std::atof(argv[++i]));
+                options.cam_lookat.z = static_cast<float>(std::atof(argv[++i]));
             }
             else if ((arg == "-l" || arg == "--light") && i < argc - 6)
             {
@@ -1645,10 +1667,11 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 options.enable_validation_layers = true;
             else if (arg == "--no_shader_opt")
                 options.enable_shader_optimization = false;
-            else if (arg == "--dump_mdl")
-                options.dump_mdl = true;
-            else if (arg == "--dump_glsl")
-                options.dump_glsl = true;
+
+            else if (arg == "--dump_mdl" && i < argc - 1)
+                options.dump_mdl = (argv[++i]);
+            else if (arg == "--dump_glsl" && i < argc - 1)
+                options.dump_glsl = (argv[++i]);
 
             else if (arg == "--info")
                 options.log_level = mi::examples::log::Level::Info;
@@ -1664,8 +1687,6 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 print_usage(argv[0]);
             }
         }
-        else
-            options.material_name = arg;
     }
 }
 
@@ -1785,7 +1806,13 @@ int MAIN_UTF8(int argc, char* argv[])
                     gen.add_materialx_search_path(p);
                 for (const auto& l : options.mtlx_libraries)
                     gen.add_materialx_library(l);
-                gen.set_source(options.material_name, "");
+
+                // When the MaterialX filename has a query parameter called 'name', use it as element selector
+                const auto query_arguments = mi::examples::io::parse_url_query(mi::examples::io::get_url_query(options.material_name));
+                const auto& nameIt = query_arguments.find("name");
+                gen.set_source(
+                    mi::examples::io::drop_url_query(options.material_name),
+                    nameIt == query_arguments.end() ? "" : nameIt->second);
 
                 Mdl_generator::Result result;
                 if (gen.generate(mdl_config.get(), result))
@@ -1800,9 +1827,11 @@ int MAIN_UTF8(int argc, char* argv[])
                         qualified_module_name.clear();
                         material_simple_name.clear();
                     }
-                    else if (options.dump_mdl)
+                    else if (!options.dump_mdl.empty())
                     {
-                        std::string dump_mdl_path = mi::examples::io::get_working_directory() + "/generated.mdl";
+                        std::string dump_mdl_path = options.dump_mdl;
+                        if (!mi::examples::io::is_absolute_path(dump_mdl_path))
+                            dump_mdl_path = mi::examples::io::get_working_directory() + "/" + dump_mdl_path;
                         mi::examples::log::info("Dumping generated MDL module to: \"%s\"", dump_mdl_path.c_str());
                         std::ofstream file_stream(dump_mdl_path);
                         file_stream.write(result.generated_mdl_code.c_str(), result.generated_mdl_code.length());
@@ -1860,9 +1889,11 @@ int MAIN_UTF8(int argc, char* argv[])
                 generate_glsl_code(compiled_material.get(), mdl_backend_api.get(),
                     transaction.get(), context.get(), options));
 
-            if (options.dump_glsl)
+            if (!options.dump_glsl.empty())
             {
-                std::string dump_glsl_path = mi::examples::io::get_working_directory() + "/target_code.glsl";
+                std::string dump_glsl_path = options.dump_glsl;
+                if (!mi::examples::io::is_absolute_path(dump_glsl_path))
+                    dump_glsl_path = mi::examples::io::get_working_directory() + "/" + dump_glsl_path;
                 mi::examples::log::info("Dumping GLSL target code to: \"%s\"", dump_glsl_path.c_str());
                 std::ofstream file_stream(dump_glsl_path);
                 file_stream.write(target_code->get_code(), target_code->get_code_size());

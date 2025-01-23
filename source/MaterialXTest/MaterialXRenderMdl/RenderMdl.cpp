@@ -39,24 +39,20 @@ class MdlShaderRenderTester : public RenderUtil::ShaderRenderTester
                      const mx::FileSearchPath& imageSearchPath,
                      const std::string& outputPath = ".",
                      mx::ImageVec* imageVec = nullptr) override;
-
-    MdlStringResolverPtr _mdlCustomResolver;
 };
 
 // Renderer setup
 void MdlShaderRenderTester::createRenderer(std::ostream& log)
 {
-    std::string renderCommand(MATERIALX_MDL_RENDER_EXECUTABLE);
     mx::FilePath renderExec(MATERIALX_MDL_RENDER_EXECUTABLE);
 
     if (!renderExec.exists())
     {
         log << "MDL renderer executable not set: 'MATERIALX_MDL_RENDER_EXECUTABLE'" << std::endl;
-        REQUIRE((false && "MDL renderer executable not set: 'MATERIALX_MDL_RENDER_EXECUTABLE'"));
+        log << "For running the tests, either set 'MATERIALX_MDL_RENDER_EXECUTABLE' or 'MATERIALX_BUILD_MDL_RENDER" << std::endl;
+        REQUIRE((false && "MDL renderer executable not set'"));
         return;
     }
-
-    _mdlCustomResolver = MdlStringResolver::create();
 }
 
 // Renderer execution
@@ -92,7 +88,6 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
             if (options.shaderInterfaceType == mx::SHADER_INTERFACE_REDUCED)
             {
                 outputFilePath = outputFilePath / mx::FilePath("reduced");
-                // TODO pass this option to the renderer as well when supported
             }
 
             // Note: mkdir will fail if the directory already exists which is ok.
@@ -104,33 +99,37 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
 
             try
             {
-                // Use the same resolver as in the generator tests.
-                // Here, we don't actually resolve but instead only use the MDL search paths.
-                _mdlCustomResolver->initialize(doc, &log, {});
-
                 // executable
                 std::string renderCommand(MATERIALX_MDL_RENDER_EXECUTABLE);
                 CHECK(!renderCommand.empty());
 
-                 // use the same paths as the resolver
-                for (const auto& sp : _mdlCustomResolver->getMdlSearchPaths())
+                // Set MaterialX search paths
+                mx::FileSearchPath searchPath = mx::getDefaultDataSearchPath();
+                mx::FilePath rootPath = searchPath.isEmpty() ? mx::FilePath() : searchPath[0];
+                renderCommand += " --mtlx_path \"" + rootPath.asString() + "\"";
+
+                // Set MDL search paths
+                // Use the same resolver as in the generator tests.
+                // Here, we don't actually resolve but instead only use the MDL search paths.
+                MdlStringResolver resolver;
+                resolver.initialize(doc, &log, {});
+                for (const auto& sp : resolver.getMdlSearchPaths())
                 {
                     renderCommand += " --mdl_path \"" + sp.asString() + "\"";
                 }
 
-                mx::FileSearchPath searchPath = mx::getDefaultDataSearchPath();
-                mx::FilePath rootPath = searchPath.isEmpty() ? mx::FilePath() : searchPath[0];
-                // set environment
+                // Set environment
                 std::string iblFile = (rootPath / "resources/lights/san_giuseppe_bridge.hdr").asString();
-                renderCommand += " --hdr \"" + iblFile + "\" --hdr_rotate 90";
-                // set scene
-                renderCommand += " --uv_scale 0.5 1.0 --uv_offset 0.0 0.0 --uv_repeat";
-                renderCommand += " --uv_flip"; // this will flip the v coordinate of the vertices, which flips all the
-                                               // UV operations. In contrast, the fileTextureVerticalFlip option will
-                                               // only flip the image access nodes.
-                renderCommand += " --camera 0 0 3 0 0 0 --fov 45";
+                renderCommand += " --hdr \"" + iblFile + "\"";
 
-                // set the material
+                // Set scene
+                // renderCommand += " --uv_scale 0.5 1.0 --uv_offset 0.0 0.0 --uv_repeat";
+                // renderCommand += " --uv_flip"; // this will flip the v coordinate of the vertices, which flips all the
+                //                                // UV operations. In contrast, the fileTextureVerticalFlip option will
+                //                                // only flip the image access nodes.
+                renderCommand += " --camera 3 0 0 0 0 0 --fov 45";
+
+                // Set the material
                 // the renderer supports MaterialX natively
                 renderCommand += " --mat " + doc->getSourceUri() + "?name=" + element->getNamePath();
 
@@ -139,18 +138,21 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                 if (renderArgs.empty())
                 {
                     // Assume MDL example DXR is being used and set reasonable arguments automatically
-                    renderCommand += " --nogui --res 512 512 --iterations 1024 --max_path_length 3 --noaux --no_firefly_clamp";
-                    renderCommand += " --background 0.073239 0.073239 0.083535";
+                    renderCommand += " --nogui";
+                    renderCommand += " --res 512 512 --spp 1024 --max_path_length 3";
+                    renderCommand += " --warn"; // reduce the log messages
+                    //renderCommand += " --background 0.073239 0.073239 0.083535";
                 }
                 else
                 {
                     renderCommand += " " + renderArgs;
                 }
 
-                // Write out an .mdl file
+                // Write out an .mdl file and the corresponding glsl code
                 if (testOptions.dumpGeneratedCode)
                 {
-                    renderCommand += " -g " + shaderPath + ".mdl";
+                    renderCommand += " --dump_mdl " + shaderPath + ".mdl";
+                    renderCommand += " --dump_glsl " + shaderPath + ".mdl.glsl";
                 }
 
                 // set the output image file
@@ -160,10 +162,12 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                 renderCommand += " -o " + shaderPath + "_mdl.png";
 #endif
                 // also create a full log
-                renderCommand += " --log_file " + shaderPath + +".mdl_render_log.txt";
+                //renderCommand += " --log_file " + shaderPath + +".mdl_render_log.txt";
 
                 // run the renderer executable
                 int returnValue = std::system(renderCommand.c_str());
+                CHECK(returnValue == 0);
+                continue;
 
                 mx::FilePath errorLogFile = shaderPath + ".mdl_render_log.txt";
                 std::ifstream logStream(errorLogFile);

@@ -98,8 +98,8 @@ inline void verbose(const std::string& message)
 template <typename... Args>
 void verbose(const char* format_string, Args... args)
 {
-    const std::string message = mi::examples::strings::format(format_string, std::forward<Args>(args)...);
-    print(Level::Verbose, message);
+    if (static_cast<char>(s_Level) >= static_cast<char>(Level::Verbose))
+        print(Level::Verbose, mi::examples::strings::format(format_string, std::forward<Args>(args)...));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -113,8 +113,8 @@ inline void info(const std::string& message)
 template <typename... Args>
 void info(const char* format_string, Args... args)
 {
-    const std::string message = mi::examples::strings::format(format_string, std::forward<Args>(args)...);
-    print(Level::Info, message);
+    if (static_cast<char>(s_Level) >= static_cast<char>(Level::Info))
+        print(Level::Info, mi::examples::strings::format(format_string, std::forward<Args>(args)...));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -128,8 +128,8 @@ inline void warning(const std::string& message)
 template <typename... Args>
 void warning(const char* format_string, Args... args)
 {
-    const std::string message = mi::examples::strings::format(format_string, std::forward<Args>(args)...);
-    print(Level::Warning, message);
+    if (static_cast<char>(s_Level) >= static_cast<char>(Level::Warning))
+        print(Level::Warning, mi::examples::strings::format(format_string, std::forward<Args>(args)...));
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -143,8 +143,8 @@ inline void error(const std::string& message)
 template <typename... Args>
 void error(const char* format_string, Args... args)
 {
-    const std::string message = mi::examples::strings::format(format_string, std::forward<Args>(args)...);
-    print(Level::Error, message);
+    if (static_cast<char>(s_Level) >= static_cast<char>(Level::Error))
+        print(Level::Error, mi::examples::strings::format(format_string, std::forward<Args>(args)...));
 }
 
 // ------------------------------------------------------------------------------------------------

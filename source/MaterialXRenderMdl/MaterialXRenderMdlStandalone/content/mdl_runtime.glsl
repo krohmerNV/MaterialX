@@ -647,6 +647,11 @@ vec4 scene_data_lookup_float4(State state, int scene_data_id, vec4 default_value
 
 vec3 scene_data_lookup_float3(State state, int scene_data_id, vec3 default_value, bool uniform_lookup)
 {
+    #if defined(MDL_STRING_CONSTANT_CAMERA_POSITION)
+        if (scene_data_id == MDL_STRING_CONSTANT_CAMERA_POSITION)
+            return uCamPos;
+    #endif
+
     return default_value;
 }
 

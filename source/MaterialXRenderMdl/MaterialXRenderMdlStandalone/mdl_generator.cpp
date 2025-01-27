@@ -161,40 +161,47 @@ private:
 // ------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------
 
-Mdl_generator::Mdl_generator()
-    : m_mtlx_search_paths()
-    , m_mtlx_relative_library_paths()
-    , m_mdl_version(mx::GenMdlOptions::MdlVersion::MDL_LATEST)
+MdlGenerator::MdlGenerator()
+    : _mtlxSearchPaths()
+    , _mtlxRelativeLibraryPaths()
+    , _mdlVersion(mx::GenMdlOptions::MdlVersion::MDL_LATEST)
 {
 }
 
 // ------------------------------------------------------------------------------------------------
 
-void Mdl_generator::add_materialx_search_path(const std::string& mtlx_path)
+void MdlGenerator::AddMaterialxSearchPath(const std::string& mtlx_path)
 {
-    m_mtlx_search_paths.push_back(mtlx_path);
-    std::replace(m_mtlx_search_paths.back().begin(), m_mtlx_search_paths.back().end(), '/', '\\');
+    _mtlxSearchPaths.push_back(mtlx_path);
+    std::replace(_mtlxSearchPaths.back().begin(), _mtlxSearchPaths.back().end(), '/', '\\');
 }
 
 // ------------------------------------------------------------------------------------------------
 
-void Mdl_generator::add_materialx_library(const std::string& mtlx_library)
+void MdlGenerator::AddMaterialxLibrary(const std::string& mtlx_library)
 {
-    m_mtlx_relative_library_paths.push_back(mtlx_library);
-    std::replace(m_mtlx_relative_library_paths.back().begin(),
-        m_mtlx_relative_library_paths.back().end(), '/', '\\');
+    _mtlxRelativeLibraryPaths.push_back(mtlx_library);
+    std::replace(_mtlxRelativeLibraryPaths.back().begin(),
+        _mtlxRelativeLibraryPaths.back().end(), '/', '\\');
 }
 
 // ------------------------------------------------------------------------------------------------
 
-void Mdl_generator::set_mdl_version(mx::GenMdlOptions::MdlVersion target_version)
+void MdlGenerator::SetMdlVersion(mx::GenMdlOptions::MdlVersion target_version)
 {
-    m_mdl_version = target_version;
+    _mdlVersion = target_version;
 }
 
 // ------------------------------------------------------------------------------------------------
 
-bool Mdl_generator::set_source(const std::string& mtlx_material, const std::string& material_name)
+void MdlGenerator::SetFileTextureVerticalFlip(bool flip)
+{
+    _fileTextureVerticalFlip = flip;
+}
+
+// ------------------------------------------------------------------------------------------------
+
+bool MdlGenerator::SetSource(const std::string& mtlx_material, const std::string& material_name)
 {
     if (!mi::examples::io::file_exists(mtlx_material))
     {
@@ -202,15 +209,15 @@ bool Mdl_generator::set_source(const std::string& mtlx_material, const std::stri
         return false;
     }
 
-    m_mtlx_source = mtlx_material;
-    m_mtlx_material_name = material_name;
-    std::replace(m_mtlx_source.begin(), m_mtlx_source.end(), '/', '\\');
+    _mtlxSource = mtlx_material;
+    _mtlxMaterialName = material_name;
+    std::replace(_mtlxSource.begin(), _mtlxSource.end(), '/', '\\');
     return true;
 }
 
 // ------------------------------------------------------------------------------------------------
 
-bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuration, Result& inout_result) const
+bool MdlGenerator::Generate(mi::neuraylib::IMdl_configuration* mdl_configuration, Result& inout_result) const
 {
     // Initialize the standard library
     mx::DocumentPtr mtlx_std_lib;
@@ -221,11 +228,11 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
         mx::FilePath{ mi::examples::io::get_executable_folder() + "/autodesk_materialx" });
 
     // add additional search paths
-    for (auto& p : m_mtlx_search_paths)
+    for (auto& p : _mtlxSearchPaths)
         mtlx_search_path.append(mx::FilePath{ p });
 
     // add additional relative library paths
-    for (auto& l : m_mtlx_relative_library_paths)
+    for (auto& l : _mtlxRelativeLibraryPaths)
         mtlx_library_folders.push_back(mx::FilePath{ l });
 
     try
@@ -296,7 +303,7 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
     generator_context.getOptions().targetDistanceUnit = "meter";
 
     // load the actual material
-    if (m_mtlx_source.empty())
+    if (_mtlxSource.empty())
     {
         mi::examples::log::error("[MtlX2Mdl] Source file not specified.");
         return false;
@@ -324,14 +331,17 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
     // Specify the MDL target version.
     // Using the latest by default.
     mx::GenMdlOptionsPtr genMdlOptions = std::make_shared<mx::GenMdlOptions>();
-    genMdlOptions->targetVersion = m_mdl_version;
+    genMdlOptions->targetVersion = _mdlVersion;
     generator_context.pushUserData(mx::GenMdlOptions::GEN_CONTEXT_USER_DATA_KEY, genMdlOptions);
 
+    // Note, this should only be needed when image space and texture coordinate space of the vertex data
+    // are not aligned properly.
+    generator_context.getOptions().fileTextureVerticalFlip = _fileTextureVerticalFlip;
 
     // Load source document.
     mx::DocumentPtr material_document = mx::createDocument();
-    mx::FilePath material_filename = m_mtlx_source;
-    mx::readFromXmlFile(material_document, m_mtlx_source, mtlx_search_path, &readOptions);
+    mx::FilePath material_filename = _mtlxSource;
+    mx::readFromXmlFile(material_document, _mtlxSource, mtlx_search_path, &readOptions);
 
     // Import libraries.
     material_document->importLibrary(mtlx_std_lib);
@@ -350,15 +360,15 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
         // it points to mtlx authoring errors but rendering could still be fine.
         // since MDL is robust against erroneous code we just continue. If there are problems
         // in the generated code, we detect it on module load and use a fall-back material.
-        mi::examples::log::warning("[MtlX2Mdl] Validation warnings for '" + m_mtlx_source + "'\n" + message);
+        mi::examples::log::warning("[MtlX2Mdl] Validation warnings for '" + _mtlxSource + "'\n" + message);
     }
 
     // find (selected) renderable nodes
     mx::TypedElementPtr element_to_generate_code_for;
-    if (!m_mtlx_material_name.empty())
+    if (!_mtlxMaterialName.empty())
     {
         mx::ElementPtr elem = material_document->getRoot();
-        std::vector<std::string> path = mi::examples::strings::split(m_mtlx_material_name, '/');
+        std::vector<std::string> path = mi::examples::strings::split(_mtlxMaterialName, '/');
         for (size_t i = 0; i < path.size(); ++i)
         {
             elem = elem->getChild(path[i]);
@@ -386,12 +396,12 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
 
     if (!element_to_generate_code_for)
     {
-        if (!m_mtlx_material_name.empty())
+        if (!_mtlxMaterialName.empty())
             mi::examples::log::error("[MtlX2Mdl] Code generation failure: no material named '" +
-                m_mtlx_material_name + "' found in '" + m_mtlx_source + "'");
+                _mtlxMaterialName + "' found in '" + _mtlxSource + "'");
         else
             mi::examples::log::error("[MtlX2Mdl] Code generation failure: no material found in '"
-                + m_mtlx_source + "'");
+                + _mtlxSource + "'");
 
         return false;
     }
@@ -427,11 +437,11 @@ bool Mdl_generator::generate(mi::neuraylib::IMdl_configuration* mdl_configuratio
         return false;
     }
 
-    inout_result.materialx_file_name = m_mtlx_source;
-    inout_result.materialx_material_name = material_name;
-    inout_result.generated_mdl_code = 
+    inout_result.materialxFilename = _mtlxSource;
+    inout_result.materialxMaterialName = material_name;
+    inout_result.generatedMdlCode = 
         std::string("// generated from MaterialX using the SDK version ") + MaterialX::getVersionString() + "\n\n" +
         generated;
-    inout_result.generated_mdl_name = shader->getStage("pixel").getFunctionName();
+    inout_result.generatedMdlName = shader->getStage("pixel").getFunctionName();
     return true;
 }

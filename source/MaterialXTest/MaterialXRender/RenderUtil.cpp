@@ -218,6 +218,9 @@ bool ShaderRenderTester::validate(const mx::FilePath optionsFilePath)
                 WARN("Failed to load in file: " + filename.asString() + "See: " + docValidLogFilename + " for details.");
             }
 
+            if (strstr(doc->getSourceUri().c_str(), "nprlib") == nullptr)
+                 continue;
+
             // For each new file clear the implementation cache.
             // Since the new file might contain implementations with names
             // colliding with implementations in previous test cases.

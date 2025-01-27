@@ -645,8 +645,7 @@ void Vulkan_example_app::pick_physical_device(
 
     if (supported_gpus.size() > 1)
     {
-        std::cout << "Multiple GPUs detected, run with option '--device <num>' to select specific one."
-            << " Defaults to the first discrete one:\n";
+        std::string gpu_options = "Multiple GPUs detected, run with option '--device <num>' to select specific one.";
 
         for (size_t i = 0; i < supported_gpus.size(); i++)
         {
@@ -657,27 +656,28 @@ void Vulkan_example_app::pick_physical_device(
             if (device_index == -1 && physical_device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
                 device_index = static_cast<int32_t>(i);
 
-            std::cout << "  [" << i << "] " << physical_device_props.deviceName;
+            gpu_options += "  [" + std::to_string(i) + "] " + physical_device_props.deviceName;
             switch (physical_device_props.deviceType)
             {
             case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
-                std::cout << " [integrated]";
+                gpu_options += " [integrated]";
                 break;
             case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
-                std::cout << " [discrete]";
+                gpu_options += " [discrete]";
                 break;
             case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
-                std::cout << " [virtual]";
+                gpu_options += " [virtual]";
                 break;
             case VK_PHYSICAL_DEVICE_TYPE_CPU:
-                std::cout << " [cpu]";
+                gpu_options += " [cpu]";
                 break;
             default:
-                std::cout << " [unknown]";
+                gpu_options += " [unknown]";
                 break;
             }
-            std::cout << "\n";
+            gpu_options += "\n";
         }
+        mi::examples::log::info(gpu_options);
     }
     
     if (m_config.device_index >= 0)
@@ -685,8 +685,9 @@ void Vulkan_example_app::pick_physical_device(
         if (m_config.device_index < supported_gpus.size())
             device_index = m_config.device_index;
         else
-            std::cout << "Requested device index " << m_config.device_index << " is out of bounds."
-                << "Falling back to the first discrete GPU.\n";
+            mi::examples::log::info(
+                "Requested device index %d is out of bounds. Falling back to the first discrete GPU.",
+                m_config.device_index);
     }
     else if (device_index == -1)
     {
@@ -702,8 +703,8 @@ void Vulkan_example_app::pick_physical_device(
     VkPhysicalDeviceProperties physical_device_props;
     vkGetPhysicalDeviceProperties(
         m_physical_device, &physical_device_props);
-    std::cout << "Chosen GPU: " << physical_device_props.deviceName
-        << " (driver version " << decode_driver_version(physical_device_props) << ")\n";
+    mi::examples::log::info("Chosen GPU: %  (driver version %s)",
+                            physical_device_props.deviceName, decode_driver_version(physical_device_props).c_str());
 }
 
 void Vulkan_example_app::init_device(

@@ -77,6 +77,9 @@ struct Options
     bool light_enabled = false;
     std::string hdr_file = "goegap.hdr";
     float hdr_intensity = 1.0f;
+    float hdr_rotate = 0.0f;
+    bool background_color_enabled = false;
+    mi::Float32_3 background_color = { 0.0f, 0.0f, 0.0f };
     bool enable_ro_segment = false;
     bool disable_ssbo = false;
     uint32_t max_const_data = 1024;
@@ -88,6 +91,7 @@ struct Options
     std::vector<std::string> mdl_search_paths = {};
     std::vector<std::string> mtlx_paths = {};
     std::vector<std::string> mtlx_libraries = {};
+    bool materialxtest_mode = false;
     MaterialX::GenMdlOptions::MdlVersion mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
     mi::examples::log::Level log_level = mi::examples::log::Level::Verbose;
 };
@@ -320,20 +324,30 @@ private:
 
     struct Render_params
     {
+        // Camera
         alignas(16) mi::Float32_3 cam_pos;
         alignas(16) mi::Float32_3 cam_dir;
         alignas(16) mi::Float32_3 cam_right;
         alignas(16) mi::Float32_3 cam_up;
         float cam_focal;
+
+        // Point light
         alignas(16) mi::Float32_3 point_light_pos;
         alignas(16) mi::Float32_3 point_light_color;
         float point_light_intensity;
+
+        // Environment
         float environment_intensity_factor;
         float environment_inv_integral;
+        float environment_rotation;
+        uint32_t background_color_enabled;
+        alignas(16) mi::Float32_3 background_color;
+
+        // Render params
         uint32_t max_path_length;
         uint32_t samples_per_iteration;
         uint32_t progressive_iteration;
-        uint32_t bsdf_data_flags;
+        uint32_t flip_texcoord_v;
     };
 
 private:
@@ -497,6 +511,10 @@ void Df_vulkan_app::init_resources()
         ? m_options.light_intensity / m_render_params.point_light_intensity
         : m_options.light_intensity;
     m_render_params.environment_intensity_factor = m_options.hdr_intensity;
+    m_render_params.environment_rotation = m_options.hdr_rotate;
+    m_render_params.background_color = m_options.background_color;
+    m_render_params.background_color_enabled = m_options.background_color_enabled ? 1 : 0;
+    m_render_params.flip_texcoord_v = m_options.materialxtest_mode ? 1 : 0;
 
     const float fov = m_options.cam_fov;
     const float to_radians = static_cast<float>(M_PI / 180.0);
@@ -778,6 +796,10 @@ VkShaderModule Df_vulkan_app::create_path_trace_shader_module()
     if (m_options.enable_ro_segment)
         defines.push_back("USE_RO_DATA_SEGMENT");
 
+    // string constants
+    for (size_t i = 1, n = m_target_code ? m_target_code->get_string_constant_count() : 0; i < n; ++i)
+        defines.push_back("MDL_STRING_CONSTANT_" + std::string(m_target_code->get_string_constant(i)) + "=" + std::to_string(i));
+
     // Check if functions for backface were generated
     for (mi::Size i = 0; i < m_target_code->get_callable_function_count(); i++)
     {
@@ -797,7 +819,7 @@ VkShaderModule Df_vulkan_app::create_path_trace_shader_module()
         defines, m_options.enable_shader_optimization);
     auto t1 = std::chrono::steady_clock::now();
     if (!m_path_trace_pipeline) // Print only the first time
-        std::cout << "Compile GLSL to SPIR-V: " << std::chrono::duration<float>(t1 - t0).count() << "s\n";
+        mi::examples::log::info("Compile GLSL to SPIR-V: %.3fs", std::chrono::duration<float>(t1 - t0).count());
 
     return shader_module;
 }
@@ -1498,7 +1520,7 @@ const mi::neuraylib::ITarget_code* generate_glsl_code(
     auto t1 = std::chrono::steady_clock::now();
     check_success(print_messages(context));
     check_success(target_code);
-    std::cout << "Generate GLSL target code: " << std::chrono::duration<float>(t1 - t0).count() << "s\n";
+    mi::examples::log::info("Generate GLSL target code: %.3fs", std::chrono::duration<float>(t1 - t0).count());
 
     target_code->retain();
     return target_code.get();
@@ -1555,6 +1577,9 @@ void print_usage(char const* prog_name)
         << "  --hdr <path>                hdr image file used for the environment map\n"
         << "                              (default: nvidia/sdk_examples/resources/environment.hdr)\n"
         << "  --hdr_intensity <value>     intensity of the environment map (default: 1.0)\n"
+        << "  --hdr_rotate <angle>        Environment rotation in degree (default: 0)\n"
+        << "  --background <r> <g> <b>    Constant background color to replace the environment only \n"
+        << "                              if directly visible to the camera. (default: <empty>).\n"
 
         << "  --enable_ro_segment         enable the read-only data segment\n"
         << "  --disable_ssbo              disable use of an ssbo for constants\n"
@@ -1564,9 +1589,10 @@ void print_usage(char const* prog_name)
         << "  --vkdebug                   enable the Vulkan validation layers\n"
         << "  --no_shader_opt             disables shader SPIR-V optimization\n"
 
-        << "  -o|--output <outputfile>    image file to write result in nowin mode (default: output.exr)\n"
-        << "  -g|--generated              outputs the MDL code generated from MaterialX to a file\n"
-        << "  --generated_glsl            outputs the generated GLSL target code to a file\n"
+        << "  --materialxtest_mode        setup image and texcoord space to match the test setup\n"
+        << "  -o|--output <path>          image file to write result in nowin mode (default: output.exr)\n"
+        << "  -g|--generated <path>       outputs the MDL code generated from MaterialX to a file\n"
+        << "  --generated_glsl <path>     outputs the generated GLSL target code to a file\n"
         << "  --info                      limit log output to level 'info' and higher\n"
         << "  --warn                      limit log output to level 'warning' and higher\n"
         << "  --error                     limit log output to level 'error'\n"
@@ -1655,6 +1681,15 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 options.hdr_file = argv[++i];
             else if (arg == "--hdr_intensity" && i < argc - 1)
                 options.hdr_intensity = static_cast<float>(std::atof(argv[++i]));
+            else if (arg == "--hdr_rotate" && i < argc - 1)
+                options.hdr_rotate = std::max(0.0f, std::min(static_cast<float>(atof(argv[++i])), 360.0f)) / 360.0f;
+            else if (arg == "--background" && i < argc - 3)
+            {
+                options.background_color.x = static_cast<float>(std::atof(argv[++i]));
+                options.background_color.y = static_cast<float>(std::atof(argv[++i]));
+                options.background_color.z = static_cast<float>(std::atof(argv[++i]));
+                options.background_color_enabled = true;
+            }
             else if ((arg == "-p" || arg == "--mdl_path") && i < argc - 1)
                 options.mdl_search_paths.push_back(argv[++i]);
             else if (arg == "--enable_ro_segment")
@@ -1668,9 +1703,11 @@ void parse_command_line(int argc, char* argv[], Options& options)
             else if (arg == "--no_shader_opt")
                 options.enable_shader_optimization = false;
 
-            else if (arg == "--dump_mdl" && i < argc - 1)
+            else if (arg == "--materialxtest_mode")
+                options.materialxtest_mode = true;
+            else if ((arg == "-g" || arg == "--generated") && i < argc - 1)
                 options.dump_mdl = (argv[++i]);
-            else if (arg == "--dump_glsl" && i < argc - 1)
+            else if (arg == "--generated_glsl" && i < argc - 1)
                 options.dump_glsl = (argv[++i]);
 
             else if (arg == "--info")
@@ -1800,27 +1837,28 @@ int MAIN_UTF8(int argc, char* argv[])
             if (std::strstr(options.material_name.c_str(), ".mtlx") != nullptr)
             {
                 // Note, this section is all that is needed to add MaterialX support to an MDL-based renderer
-                Mdl_generator gen;
-                gen.set_mdl_version(options.mdl_target_version);
+                MdlGenerator gen;
+                gen.SetMdlVersion(options.mdl_target_version);
+                gen.SetFileTextureVerticalFlip(options.materialxtest_mode);
                 for (const auto& p : options.mtlx_paths)
-                    gen.add_materialx_search_path(p);
+                    gen.AddMaterialxSearchPath(p);
                 for (const auto& l : options.mtlx_libraries)
-                    gen.add_materialx_library(l);
+                    gen.AddMaterialxLibrary(l);
 
                 // When the MaterialX filename has a query parameter called 'name', use it as element selector
                 const auto query_arguments = mi::examples::io::parse_url_query(mi::examples::io::get_url_query(options.material_name));
                 const auto& nameIt = query_arguments.find("name");
-                gen.set_source(
+                gen.SetSource(
                     mi::examples::io::drop_url_query(options.material_name),
                     nameIt == query_arguments.end() ? "" : nameIt->second);
 
-                Mdl_generator::Result result;
-                if (gen.generate(mdl_config.get(), result))
+                MdlGenerator::Result result;
+                if (gen.Generate(mdl_config.get(), result))
                 {
                     qualified_module_name = "::app::generated";
-                    material_simple_name = result.generated_mdl_name;
+                    material_simple_name = result.generatedMdlName;
                     if (mdl_impexp_api->load_module_from_string(
-                            transaction.get(), qualified_module_name.c_str(), result.generated_mdl_code.c_str(), context.get()) < 0)
+                            transaction.get(), qualified_module_name.c_str(), result.generatedMdlCode.c_str(), context.get()) < 0)
                     {
                         mi::examples::log::error("Failed to load the generated MDL code from: " + options.material_name);
                         mi::examples::log::context_messages(context.get());
@@ -1834,7 +1872,7 @@ int MAIN_UTF8(int argc, char* argv[])
                             dump_mdl_path = mi::examples::io::get_working_directory() + "/" + dump_mdl_path;
                         mi::examples::log::info("Dumping generated MDL module to: \"%s\"", dump_mdl_path.c_str());
                         std::ofstream file_stream(dump_mdl_path);
-                        file_stream.write(result.generated_mdl_code.c_str(), result.generated_mdl_code.length());
+                        file_stream.write(result.generatedMdlCode.c_str(), result.generatedMdlCode.length());
                         file_stream.close();
                     }
                 }
@@ -1911,6 +1949,7 @@ int MAIN_UTF8(int argc, char* argv[])
             app_config.device_index = options.device_index;
             app_config.enable_validation_layers = options.enable_validation_layers;
             app_config.enable_descriptor_indexing = true;
+            app_config.flip_texcoord_v = options.materialxtest_mode;
 
             Df_vulkan_app app(transaction, mdl_impexp_api, image_api, target_code, compiled_material,options);
             app.run(app_config);

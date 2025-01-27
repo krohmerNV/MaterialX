@@ -20,7 +20,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-#include "MaterialXRenderMdlStandalone/mdl_runtime.glsl"
 
 layout(local_size_x = LOCAL_SIZE_X, local_size_y = LOCAL_SIZE_Y, local_size_z = 1) in;
 
@@ -37,15 +36,19 @@ layout(std140, set = 0, binding = BINDING_RENDER_PARAMS) uniform Render_params
     vec3 uPointLightPos;
     vec3 uPointLightColor;
     float uPointLightIntensity;
-    
-    // Environment map
+
+    // Environment
     float uEnvironmentIntensityFactor;
     float uEnvironmentInvIntegral;
+    float uEnvironmentRotation;
+    uint uBackgroundColorEnabled;
+    vec3 uBackgroundColor;
 
     // Render params
     uint uMaxPathLength;
     uint uSamplesPerIteration;
     uint uProgressiveIteration;
+    uint uFlipTexCoordV;
 };
 
 layout(set = 0, binding = BINDING_ENV_MAP) uniform sampler2D uEnvironmentMap;
@@ -73,6 +76,7 @@ struct Ray_state
     vec3 dir;
     float last_bsdf_pdf;
     bool is_inside;
+    bool is_camera_ray;
 };
 
 struct Ray_hit_info
@@ -88,6 +92,11 @@ struct Ray_hit_info
 const float M_PI = 3.14159265358979323846;
 const float M_ONE_OVER_PI = 0.318309886183790671538;
 const float DIRAC = -1.0;
+
+//-------------------------------------------------------------------------------------------------
+// MDL Runtime for resource access
+//-------------------------------------------------------------------------------------------------
+#include "MaterialXRenderMdlStandalone/mdl_runtime.glsl"
 
 
 //-------------------------------------------------------------------------------------------------
@@ -182,7 +191,10 @@ float rnd(inout uint prev)
 vec3 environment_evaluate(vec3 normalized_dir, out float pdf)
 {
     // assuming lat long
-    const float u = atan(normalized_dir.z, normalized_dir.x) * 0.5 * M_ONE_OVER_PI + 0.5;
+    float u = atan(normalized_dir.z, normalized_dir.x) * 0.5 * M_ONE_OVER_PI + 0.5;
+    u -= uEnvironmentRotation;
+    if (u < 0.0f)
+        u += 1.0f;
     const float v = acos(-normalized_dir.y) * M_ONE_OVER_PI;
 
     // get radiance and calculate pdf
@@ -217,7 +229,10 @@ vec3 environment_sample(inout uint seed, out vec3 to_light, out float pdf)
     
     // uniformly sample spherical area of pixel
     const float u = float(px + xi_y) / float(tex_size.x);
-    const float phi = u * 2.0 * M_PI - M_PI;
+    float u_rot = u + uEnvironmentRotation;
+    if (u_rot > 1.0f)
+        u_rot -= 1.0f;
+    const float phi = u_rot * 2.0 * M_PI - M_PI;
     const float sin_phi = sin(phi);
     const float cos_phi = cos(phi);
     const float step_theta = M_PI / float(tex_size.y);
@@ -290,8 +305,8 @@ bool intersect_sphere(vec3 ray_origin, vec3 ray_dir, out Ray_hit_info out_info)
     const float phi = atan(out_info.normal.x, out_info.normal.z);
     const float theta = acos(out_info.normal.y);
     out_info.tex_coord = vec3(
-        phi * M_ONE_OVER_PI + 1.0,
-        1.0 - theta * M_ONE_OVER_PI,
+        (phi * M_ONE_OVER_PI + 1.0) * 0.5,
+        (uFlipTexCoordV == 0) ? (1.0 - theta * M_ONE_OVER_PI) : theta * M_ONE_OVER_PI,
         0.0);
 
     const float sin_phi = sin(phi);
@@ -363,17 +378,19 @@ void trace_path(inout Ray_state ray_state, inout uint seed)
             float light_pdf;
             vec3 light_radiance = environment_evaluate(ray_state.dir, light_pdf);
 
-            // Incoperate point light selection probability
+            // Incorporate point light selection probability
             if (uPointLightIntensity > 0.0)
                 light_pdf *= 0.5;
 
             float mis_weight = ray_state.last_bsdf_pdf == DIRAC
                 ? 1.0
                 : ray_state.last_bsdf_pdf / (ray_state.last_bsdf_pdf + light_pdf);
-            
+
             ray_state.contribution += light_radiance * ray_state.weight * mis_weight;
             break;
         }
+        // Ray hit the sphere
+        ray_state.is_camera_ray = false;
 
         State state = make_mdl_state(hit_info, ray_state.is_inside);
         
@@ -539,10 +556,15 @@ void main()
         ray_state.dir = ray_dir;
         ray_state.last_bsdf_pdf = DIRAC;
         ray_state.is_inside = dot(ray_origin, ray_origin) < 1.0;
+        ray_state.is_camera_ray = true;
 
         trace_path(ray_state, seed);
 
-        contribution += ray_state.contribution;
+        // replace the background with a constant color when visible to the camera
+        if (uBackgroundColorEnabled != 0 && ray_state.is_camera_ray)
+            contribution += uBackgroundColor;
+        else
+            contribution += ray_state.contribution;
     }
 
     contribution *= 1.0 / float(uSamplesPerIteration);

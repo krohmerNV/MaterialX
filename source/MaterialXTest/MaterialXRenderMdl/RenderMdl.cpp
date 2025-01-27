@@ -67,7 +67,7 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                                         const std::string& outputPath,
                                         mx::ImageVec* /*imageVec*/)
 {
-    std::cout << "Validating MDL rendering for: " << doc->getSourceUri() << std::endl;
+    std::cout << "Validating MDL rendering for: " << doc->getSourceUri() << " element: " << element->getNamePath() << std::endl;
     mx::ScopedTimer totalMDLTime(&profileTimes.languageTimes.totalTime);
 
     std::vector<mx::GenOptions> optionsList;
@@ -121,29 +121,25 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                 // Set environment
                 std::string iblFile = (rootPath / "resources/lights/san_giuseppe_bridge.hdr").asString();
                 renderCommand += " --hdr \"" + iblFile + "\"";
+                renderCommand += " --hdr_rotate 90";
+                renderCommand += " --background 0.073239 0.073239 0.083535";
 
                 // Set scene
-                // renderCommand += " --uv_scale 0.5 1.0 --uv_offset 0.0 0.0 --uv_repeat";
-                // renderCommand += " --uv_flip"; // this will flip the v coordinate of the vertices, which flips all the
-                //                                // UV operations. In contrast, the fileTextureVerticalFlip option will
-                //                                // only flip the image access nodes.
-                renderCommand += " --camera 3 0 0 0 0 0 --fov 45";
+                renderCommand += " --camera 0 0 3 0 0 0 --fov 45";
+                renderCommand += " --materialxtest_mode"; // align image and texcoord space with OSL
 
                 // Set the material
                 // the renderer supports MaterialX natively
                 renderCommand += " --mat " + doc->getSourceUri() + "?name=" + element->getNamePath();
 
-                // This must be a render args option. Rest are consistent between dxr and cuda example renderers.
+                // Application setup
+                renderCommand += " --nogui"; // headless mode
+                renderCommand += " --res 512 512 --spp 1024 --max_path_length 3";
+                renderCommand += " --warn"; // reduce the log messages
+
+                // addition optional render arguments
                 std::string renderArgs(MATERIALX_MDL_RENDER_ARGUMENTS);
-                if (renderArgs.empty())
-                {
-                    // Assume MDL example DXR is being used and set reasonable arguments automatically
-                    renderCommand += " --nogui";
-                    renderCommand += " --res 512 512 --spp 1024 --max_path_length 3";
-                    renderCommand += " --warn"; // reduce the log messages
-                    //renderCommand += " --background 0.073239 0.073239 0.083535";
-                }
-                else
+                if (!renderArgs.empty())
                 {
                     renderCommand += " " + renderArgs;
                 }
@@ -151,8 +147,8 @@ bool MdlShaderRenderTester::runRenderer(const std::string& shaderName,
                 // Write out an .mdl file and the corresponding glsl code
                 if (testOptions.dumpGeneratedCode)
                 {
-                    renderCommand += " --dump_mdl " + shaderPath + ".mdl";
-                    renderCommand += " --dump_glsl " + shaderPath + ".mdl.glsl";
+                    renderCommand += " --generated " + shaderPath + ".mdl";
+                    renderCommand += " --generated_glsl " + shaderPath + ".mdl.glsl";
                 }
 
                 // set the output image file

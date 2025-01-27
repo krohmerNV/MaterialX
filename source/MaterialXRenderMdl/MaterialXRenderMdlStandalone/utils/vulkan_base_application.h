@@ -131,6 +131,7 @@ public:
         int32_t device_index = -1;
         bool enable_validation_layers = false;
         bool enable_descriptor_indexing = false;
+        bool flip_texcoord_v = false;
     };
 
 public:

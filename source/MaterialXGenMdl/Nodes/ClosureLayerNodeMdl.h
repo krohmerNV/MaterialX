@@ -47,13 +47,35 @@ class MX_GENMDL_API StringConstantsMdl
 template <typename TBase> class CarryThinFilmParameters : public TBase
 {
   public:
+
+    // with some back-ports to 1.38 we now have receiving nodes that support thin-film natively
+    void initialize(const InterfaceElement& element, GenContext& context) override
+    {
+        TBase::initialize(element, context);
+        const Implementation& impl = static_cast<const Implementation&>(element);
+        NodeDefPtr nodeDef = impl.getNodeDef();
+
+        bool hasThinFilmThicknessInput = nodeDef->getInput(StringConstantsMdl::THIN_FILM_THICKNESS) != nullptr;
+        bool hasThinFilmIorInput = nodeDef->getInput(StringConstantsMdl::THIN_FILM_IOR) != nullptr;
+        
+        if (hasThinFilmThicknessInput != hasThinFilmIorInput)
+        {
+            throw ExceptionShaderGenError("Definition '" + nodeDef->getName() + "' is missing some of the typical thin-film arguments");
+        }
+        _nativeThinFilmSupport = hasThinFilmThicknessInput;
+    }
+
     /// Add the thin film inputs for transporting the parameter.
     /// `addInputs` for the injected base class is called first.
     void addInputs(ShaderNode& node, GenContext& context) const override
     {
         TBase::addInputs(node, context);
-        node.addInput(StringConstantsMdl::THIN_FILM_THICKNESS, Type::FLOAT);
-        node.addInput(StringConstantsMdl::THIN_FILM_IOR, Type::FLOAT);
+
+        if (!_nativeThinFilmSupport)
+        {
+            node.addInput(StringConstantsMdl::THIN_FILM_THICKNESS, Type::FLOAT);
+            node.addInput(StringConstantsMdl::THIN_FILM_IOR, Type::FLOAT);
+        }
     }
 
     /// Mark the thin film parameters as not editable because connections are
@@ -61,13 +83,20 @@ template <typename TBase> class CarryThinFilmParameters : public TBase
     /// get exposed to the public material interface.
     bool isEditable(const ShaderInput& input) const override
     {
-        if (input.getName() == StringConstantsMdl::THIN_FILM_THICKNESS ||
-            input.getName() == StringConstantsMdl::THIN_FILM_IOR)
+        if ((input.getName() == StringConstantsMdl::THIN_FILM_THICKNESS && !_nativeThinFilmSupport) ||
+            (input.getName() == StringConstantsMdl::THIN_FILM_IOR && !_nativeThinFilmSupport))
         {
             return false;
         }
         return TBase::isEditable(input);
     }
+    using TBase::isEditable;
+
+    /// True if the Node supports thin film natively. Needed to special case in the layers.
+    bool hasNativeThinFilmSupport() const { return _nativeThinFilmSupport; }
+
+  private:
+    bool _nativeThinFilmSupport;
 };
 
 /// Closure layer node implementation for MDL.
@@ -111,6 +140,7 @@ class MX_GENMDL_API LayerableNodeMdl : public SourceCodeNodeMdl
 
     void addInputs(ShaderNode& node, GenContext&) const override;
     bool isEditable(const ShaderInput& input) const override;
+    using BASE::isEditable; // exposes isEditable(const ShaderGraphInputSocket&)
 };
 
 /// Used for elemental nodes that can consume thin film.
@@ -143,7 +173,7 @@ class MX_GENMDL_API MixBsdfNodeMdl : public ThinFilmCombineNodeMdl
     static ShaderNodeImplPtr create();
 
   protected:
-    virtual const string& getOperatorName(size_t index) const final;
+    const string& getOperatorName(size_t index) const final;
 };
 
 /// Used for add_bsdf and multpli_bsdf nodes.
@@ -153,7 +183,7 @@ class MX_GENMDL_API AddOrMultiplyBsdfNodeMdl : public ThinFilmCombineNodeMdl
     static ShaderNodeImplPtr create();
 
   protected:
-    virtual const string& getOperatorName(size_t index) const final;
+    const string& getOperatorName(size_t index) const final;
 };
 
 MATERIALX_NAMESPACE_END

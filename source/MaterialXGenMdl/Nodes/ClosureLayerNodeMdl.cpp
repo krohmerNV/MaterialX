@@ -121,28 +121,38 @@ void ClosureLayerNodeMdl::emitFunctionCall(const ShaderNode& _node, GenContext& 
         return;
     }
 
-    // Otherwise, if the layer is carrying thin film parameters already,
-    // they are pushed further down to the top and base node if they supported it.
-    ShaderInput* layerNodeThicknessInput = node.getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* layerNodeIorInput = node.getInput(StringConstantsMdl::THIN_FILM_IOR);
-
-    ShaderInput* topNodeThicknessInput = top->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* topNodeIorInput = top->getInput(StringConstantsMdl::THIN_FILM_IOR);
+    // with back ports to 1.38 we now have elemental BSDF nodes that do have thin-film support.
+    const ShaderNodeImpl& impl = top->getImplementation();
+    const ThinFilmReceiverNodeMdl* topNodeWithNativeThinfilmSupport = dynamic_cast<const ThinFilmReceiverNodeMdl*>(&impl);
     bool breakTopConnection = false;
-    if (layerNodeThicknessInput && layerNodeIorInput && topNodeThicknessInput && topNodeIorInput)
-    {
-        topNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
-        topNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
-        breakTopConnection = true;
-    }
-    ShaderInput* baseNodeThicknessInput = base->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* baseNodeIorInput = base->getInput(StringConstantsMdl::THIN_FILM_IOR);
     bool breakBaseConnection = false;
-    if (layerNodeThicknessInput && layerNodeIorInput && baseNodeThicknessInput && baseNodeIorInput)
+    ShaderInput* topNodeThicknessInput = nullptr;
+    ShaderInput* topNodeIorInput = nullptr;
+    ShaderInput* baseNodeThicknessInput = nullptr;
+    ShaderInput* baseNodeIorInput = nullptr;
+    if (!topNodeWithNativeThinfilmSupport || !topNodeWithNativeThinfilmSupport->hasNativeThinFilmSupport())
     {
-        baseNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
-        baseNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
-        breakBaseConnection = true;
+        // Otherwise, if the layer is carrying thin film parameters already,
+        // they are pushed further down to the top and base node if they supported it.
+        ShaderInput* layerNodeThicknessInput = node.getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        ShaderInput* layerNodeIorInput = node.getInput(StringConstantsMdl::THIN_FILM_IOR);
+
+        topNodeThicknessInput = top->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        topNodeIorInput = top->getInput(StringConstantsMdl::THIN_FILM_IOR);
+        if (layerNodeThicknessInput && layerNodeIorInput && topNodeThicknessInput && topNodeIorInput)
+        {
+            topNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
+            topNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
+            breakTopConnection = true;
+        }
+        baseNodeThicknessInput = base->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        baseNodeIorInput = base->getInput(StringConstantsMdl::THIN_FILM_IOR);
+        if (layerNodeThicknessInput && layerNodeIorInput && baseNodeThicknessInput && baseNodeIorInput)
+        {
+            baseNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
+            baseNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
+            breakBaseConnection = true;
+        }
     }
 
     // note, this called for all layering operations independent of thin film
@@ -352,28 +362,38 @@ void ThinFilmCombineNodeMdl::emitFunctionCall(const ShaderNode& _node, GenContex
     ShaderNode* top = topInput->getConnection()->getNode();
     ShaderNode* base = baseInput->getConnection()->getNode();
 
-    // Otherwise, if the combine node is carrying thin film parameters already,
-    // they are pushed further down to the top and base node if they supported it.
-    ShaderInput* layerNodeThicknessInput = node.getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* layerNodeIorInput = node.getInput(StringConstantsMdl::THIN_FILM_IOR);
-
-    ShaderInput* topNodeThicknessInput = top->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* topNodeIorInput = top->getInput(StringConstantsMdl::THIN_FILM_IOR);
+    // with back ports to 1.38 we now have elemental BSDF nodes that do have thin-film support.
+    const ShaderNodeImpl& impl = top->getImplementation();
+    const ThinFilmReceiverNodeMdl* topNodeWithNativeThinfilmSupport = dynamic_cast<const ThinFilmReceiverNodeMdl*>(&impl);
     bool breakTopConnection = false;
-    if (layerNodeThicknessInput && layerNodeIorInput && topNodeThicknessInput && topNodeIorInput)
-    {
-        topNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
-        topNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
-        breakTopConnection = true;
-    }
-    ShaderInput* baseNodeThicknessInput = base->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
-    ShaderInput* baseNodeIorInput = base->getInput(StringConstantsMdl::THIN_FILM_IOR);
     bool breakBaseConnection = false;
-    if (layerNodeThicknessInput && layerNodeIorInput && baseNodeThicknessInput && baseNodeIorInput)
+    ShaderInput* topNodeThicknessInput = nullptr;
+    ShaderInput* topNodeIorInput = nullptr;
+    ShaderInput* baseNodeThicknessInput = nullptr;
+    ShaderInput* baseNodeIorInput = nullptr;
+    if (!topNodeWithNativeThinfilmSupport || !topNodeWithNativeThinfilmSupport->hasNativeThinFilmSupport())
     {
-        baseNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
-        baseNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
-        breakBaseConnection = true;
+        // Otherwise, if the combine node is carrying thin film parameters already,
+        // they are pushed further down to the top and base node if they supported it.
+        ShaderInput* layerNodeThicknessInput = node.getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        ShaderInput* layerNodeIorInput = node.getInput(StringConstantsMdl::THIN_FILM_IOR);
+
+        topNodeThicknessInput = top->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        topNodeIorInput = top->getInput(StringConstantsMdl::THIN_FILM_IOR);
+        if (layerNodeThicknessInput && layerNodeIorInput && topNodeThicknessInput && topNodeIorInput)
+        {
+            topNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
+            topNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
+            breakTopConnection = true;
+        }
+        baseNodeThicknessInput = base->getInput(StringConstantsMdl::THIN_FILM_THICKNESS);
+        baseNodeIorInput = base->getInput(StringConstantsMdl::THIN_FILM_IOR);
+        if (layerNodeThicknessInput && layerNodeIorInput && baseNodeThicknessInput && baseNodeIorInput)
+        {
+            baseNodeThicknessInput->makeConnection(layerNodeThicknessInput->getConnection());
+            baseNodeIorInput->makeConnection(layerNodeIorInput->getConnection());
+            breakBaseConnection = true;
+        }
     }
 
     // Emit the fore and background calls.

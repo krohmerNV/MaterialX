@@ -221,6 +221,13 @@ export material mx_generalized_schlick_bsdf(
     volume: mxp_base.volume
 );
 
+// TODO should test if we have a transmission or a volume below which isn't easy without AOVs
+// approximation: test ior > 0
+bool is_volume_is_initialized(color material_ior)
+{
+    float3 ior_vec = float3(material_ior);
+    return ior_vec.x > 1.0 || ior_vec.y > 1.0 || ior_vec.z > 1.0;
+}
 
 // TODO MDL 1.8 
 // * will add support for thin film above a color_custom_curve_layer node until then, thin_film will have no effect
@@ -295,8 +302,10 @@ export material mx_dielectric_bsdf(
     surface: material_surface(
         scattering: bsdf_selected
     ),
+    // heuristic: use the base IOR if in reflect mode and base IOR is initialized
+    // otherwise use the coat IOR
+    ior: (is_volume_is_initialized(mxp_base.ior) && mxp_scatter_mode == mx_scatter_mode_R) ? mxp_base.ior : color(mxp_ior),
     // we need to carry volume properties along for SSS
-    ior: color(mxp_ior),
     volume: mxp_base.volume
 );
 

@@ -2,28 +2,37 @@
  * Copyright 2025 NVIDIA Corporation. All rights reserved.
  *****************************************************************************/
 
-// RenderMdl/content/path_trace.comp
+// examples/mdl_sdk/df_vulkan/path_trace.comp
 
 // Expected defines:
 //   LOCAL_SIZE_X : The local work group size in the x dimension
 //   LOCAL_SIZE_Y : The local work group size in the y dimension
 //   MAX_SSS_STEPS : The number of random walk steps in case of sub-surface scattering
 //
-//   BINDING_RENDER_PARAMS         : Binding index for Render_params
-//   BINDING_ENV_MAP               : Binding index for uEnvironmentMap
-//   BINDING_ENV_MAP_SAMPLING_DATA : Binding index for Environment_sample_data_buffer
-//   BINDING_BEAUTY_BUFFER         : Binding index for uBeautyBuffer
+//   BINDING_RENDER_PARAMS             : Binding index for Render_params
+//   BINDING_ENV_MAP                   : Binding index for uEnvironmentMap
+//   BINDING_ENV_MAP_SAMPLING_DATA     : Binding index for Environment_sample_data_buffer
+//   BINDING_BEAUTY_BUFFER             : Binding index for uBeautyBuffer
+//   BINDING_AUX_ALBEDO_DIFFUSE_BUFFER : Binding index for uAuxAlbedoDiffuseBuffer
+//   BINDING_AUX_ALBEDO_GLOSSY_BUFFER  : Binding index for uAuxAlbedoGlossyBuffer
+//   BINDING_AUX_NORMAL_BUFFER         : Binding index for uAuxNormalBuffer
+//   BINDING_AUX_ROUGHNESS_BUFFER      : Binding index for uAuxRoughnessBuffer
 //
-//   MDL_HAS_BACKFACE_BSDF                      : Only defined if backface.scattering is non-default and different than surface.scattering
-//   MDL_HAS_BACKFACE_EDF                       : Only defined if backface.emission.emission is non-default and different than surface.emission.emission
-//   MDL_HAS_BACKFACE_EMISSION_INTENSITY        : Only defined if backface.emission.intensity is non-default and different than surface.emission.intensity
+//   MDL_HAS_BACKFACE_BSDF               : Only defined if backface.scattering is non-default and
+//                                         different than surface.scattering
+//   MDL_HAS_BACKFACE_EDF                : Only defined if backface.emission.emission is
+//                                         non-default and different than surface.emission.emission
+//   MDL_HAS_BACKFACE_EMISSION_INTENSITY : Only defined if backface.emission.intensity is
+//                                         non-default and different than surface.emission.intensity
 //   MDL_HAS_VOLUME_SCATTERING                  : Only defined if volume.scattering is non-default
-//   MDL_HAS_VOLUME_SCATTERING_DIRECTIONAL_BIAS : Only defined if volume.scattering is non-default and volume.scattering.directional_bias exists
+//   MDL_HAS_VOLUME_SCATTERING_DIRECTIONAL_BIAS : Only defined if volume.scattering is non-default
+//                                                and volume.scattering.directional_bias exists
 //   MDL_HAS_VOLUME_ABSORPTION                  : Only defined if volume.absorbtion is non-default
 
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
+#include "RenderMdl/mdl_runtime.glsl"
 
 layout(local_size_x = LOCAL_SIZE_X, local_size_y = LOCAL_SIZE_Y, local_size_z = 1) in;
 
@@ -41,7 +50,7 @@ layout(std140, set = 0, binding = BINDING_RENDER_PARAMS) uniform Render_params
     vec3 uPointLightColor;
     float uPointLightIntensity;
 
-    // Environment
+    // Environment map
     float uEnvironmentIntensityFactor;
     float uEnvironmentInvIntegral;
     float uEnvironmentRotation;
@@ -109,11 +118,6 @@ const float M_PI = 3.14159265358979323846;
 const float M_ONE_OVER_PI = 0.318309886183790671538;
 const float DIRAC = -1.0;
 
-//-------------------------------------------------------------------------------------------------
-// MDL Runtime for resource access
-//-------------------------------------------------------------------------------------------------
-#include "RenderMdl/mdl_runtime.glsl"
-
 
 //-------------------------------------------------------------------------------------------------
 // MDL function prototypes
@@ -175,6 +179,7 @@ float mdl_volume_scattering_directional_bias(in State state);
 #endif // MDL_HAS_VOLUME_SCATTERING
 
 float mdl_standalone_cutout_opacity(in State state);
+
 
 //-------------------------------------------------------------------------------------------------
 // random number generator based on the Optix SDK
@@ -252,7 +257,7 @@ vec3 environment_sample(inout uint seed, out vec3 to_light, out float pdf)
 
     const uint py = env_idx / tex_size.x;
     const uint px = env_idx % tex_size.x;
-    
+
     // uniformly sample spherical area of pixel
     const float u = float(px + xi_y) / float(tex_size.x);
     float u_rot = u + uEnvironmentRotation;
@@ -267,7 +272,7 @@ vec3 environment_sample(inout uint seed, out vec3 to_light, out float pdf)
     const float theta = acos(cos_theta);
     const float sin_theta = sin(theta);
     to_light = vec3(cos_phi * sin_theta, -cos_theta, sin_phi * sin_theta);
-    
+
     // lookup filtered beauty
     const float v = theta * M_ONE_OVER_PI;
     const vec4 t = textureLod(uEnvironmentMap, vec2(u, v), /*lod=*/0);
@@ -364,10 +369,11 @@ vec3 offset_ray(const vec3 p, const vec3 n)
                 abs(p.z) < origin ? p.z + float_scale * n.z : p_i.z);
 }
 
-
 // Applies volume scattering and absorption.
+//
 // Scattering is implemented as random walk.
-// The function returns true if a scattering event happened, in that case further evaluation has to be skipped and the next path segment needs to be traced.
+// The function returns true if a scattering event happened, in that case further evaluation has to
+// be skipped and the next path segment needs to be traced.
 bool handle_volume_events(inout Ray_state ray_state, in State state, float distance, inout uint seed)
 {
 #if defined(MDL_HAS_VOLUME_SCATTERING) || defined(MDL_HAS_VOLUME_ABSORPTION)
@@ -506,7 +512,6 @@ bool handle_volume_events(inout Ray_state ray_state, in State state, float dista
     return false;
 }
 
-
 State make_mdl_state(Ray_hit_info hit_info, bool inside)
 {
     const vec3 oriented_normal = inside ? -hit_info.normal : hit_info.normal;
@@ -532,7 +537,7 @@ State make_mdl_state(Ray_hit_info hit_info, bool inside)
         /*meters_per_scene_unit=*/  1.0,
         /*arg_block_offset=*/       0
     );
-    
+
 }
 
 
@@ -563,7 +568,7 @@ void trace_path(inout Ray_state ray_state, inout uint seed)
         remove_flag(ray_state.flags, FLAG_CAMERA_RAY);
 
         State state = make_mdl_state(hit_info, has_flag(ray_state.flags, FLAG_INSIDE));
-        
+
         // Handle cutout opacity
         float x_anyhit = rnd(seed);
         if (x_anyhit > mdl_standalone_cutout_opacity(state))
@@ -579,7 +584,7 @@ void trace_path(inout Ray_state ray_state, inout uint seed)
 
         // Pre-compute and cache data used by generated MDL *_sample, *_evaluate functions
         // NOTE: Would also cache data for cutout_opacity, but in this example we compile the
-        //       cutout_opacity function standalone so no expensive pre-comupation is done if
+        //       cutout_opacity function standalone so no expensive pre-computation is done if
         //       the cutout opacity causes this hit to be ignored.
         mdl_init(state);
 
@@ -590,7 +595,9 @@ void trace_path(inout Ray_state ray_state, inout uint seed)
         const vec3 ior2 = vec3((is_inside && !thin_walled) ? 1.0 : BSDF_USE_MATERIAL_IOR);
 
         // Apply volume attenuation and scattering
-        if (is_inside && !thin_walled && handle_volume_events(ray_state, state, hit_info.dist, seed))
+        if (is_inside
+            && !thin_walled
+            && handle_volume_events(ray_state, state, hit_info.dist, seed))
         {
             // we enter this block if a scattering event happened
 
@@ -608,7 +615,7 @@ void trace_path(inout Ray_state ray_state, inout uint seed)
         // Add emission
         Edf_evaluate_data edf_evaluate_data;
         edf_evaluate_data.k1 = -ray_state.dir;
-        
+
         if (is_backface)
         {
             mdl_backface_edf_evaluate(edf_evaluate_data, state);

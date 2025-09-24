@@ -500,6 +500,7 @@ bool Df_vulkan_app::init_resources()
     m_render_params.progressive_iteration = 0;
     m_render_params.max_path_length = m_options.max_path_length;
     m_render_params.samples_per_iteration = m_options.samples_per_iteration;
+    m_render_params.flip_texcoord_v = m_options.materialxtest_mode ? 1 : 0;
 
     m_render_params.point_light_pos = m_options.light_pos;
     m_render_params.point_light_intensity = m_options.light_enabled
@@ -512,17 +513,15 @@ bool Df_vulkan_app::init_resources()
     m_render_params.environment_rotation = m_options.hdr_rotate;
     m_render_params.background_color = m_options.background_color;
     m_render_params.background_color_enabled = m_options.background_color_enabled ? 1 : 0;
-    m_render_params.flip_texcoord_v = m_options.materialxtest_mode ? 1 : 0;
 
     const float fov = m_options.cam_fov;
     const float to_radians = static_cast<float>(M_PI / 180.0);
     m_render_params.cam_focal = 1.0f / mi::math::tan(fov / 2.0f * to_radians);
 
     // Setup camera
-    const mi::Float32_3 camera_pos = m_options.cam_pos;
-    mi::Float32_3 inv_dir = camera_pos - m_options.cam_lookat;
+    mi::Float32_3 inv_dir = m_options.cam_pos - m_options.cam_lookat;
     m_camera_state.base_distance = mi::math::length(inv_dir);
-    inv_dir = inv_dir / m_camera_state.base_distance;
+    inv_dir /= m_camera_state.base_distance;
     m_camera_state.phi = mi::math::atan2(inv_dir.x, inv_dir.z);
     m_camera_state.theta = mi::math::acos(inv_dir.y);
     m_camera_state.zoom = 0;
@@ -711,9 +710,7 @@ void Df_vulkan_app::update_camera_render_params(const Camera_state& cam_state)
     m_render_params.cam_up.z = -mi::math::cos(cam_state.phi) * mi::math::cos(cam_state.theta);
 
     const float dist = cam_state.base_distance * mi::math::pow(0.95f, cam_state.zoom);
-    m_render_params.cam_pos.x = -m_render_params.cam_dir.x * dist;
-    m_render_params.cam_pos.y = -m_render_params.cam_dir.y * dist;
-    m_render_params.cam_pos.z = -m_render_params.cam_dir.z * dist;
+    m_render_params.cam_pos = m_options.cam_lookat - m_render_params.cam_dir * dist;
 }
 
 bool Df_vulkan_app::create_accumulation_image()
@@ -1786,7 +1783,8 @@ void parse_command_line(int argc, char* argv[], Options& options)
             else if (arg == "--hdr_intensity" && i < argc - 1)
                 options.hdr_intensity = static_cast<float>(std::atof(argv[++i]));
             else if (arg == "--hdr_rotate" && i < argc - 1)
-                options.hdr_rotate = std::max(0.0f, std::min(static_cast<float>(atof(argv[++i])), 360.0f)) / 360.0f;
+                options.hdr_rotate
+                    = std::clamp(static_cast<float>(std::atof(argv[++i]))/360.0f, 0.0f, 1.0f);
             else if (arg == "--background" && i < argc - 3)
             {
                 options.background_color.x = static_cast<float>(std::atof(argv[++i]));
@@ -1806,12 +1804,10 @@ void parse_command_line(int argc, char* argv[], Options& options)
                 options.enable_validation_layers = true;
             else if (arg == "--no_shader_opt")
                 options.enable_shader_optimization = false;
-
             else if (arg == "--materialxtest_mode")
                 options.materialxtest_mode = true;
             else if ((arg == "-g" || arg == "--generated") && i < argc - 1)
                 options.dump_mdl = (argv[++i]);
-
             else if (arg == "--debug")
                 options.log_level = mi::examples::log::Level::Debug;
             else if (arg == "--verbose")
@@ -2083,13 +2079,13 @@ int main(int argc, char* argv[])
             app_config.image_count = options.num_images;
             app_config.headless = options.no_window;
             app_config.iteration_count = options.samples_per_pixel / options.samples_per_iteration;
-            app_config.max_sss_steps = options.max_sss_steps;
             app_config.device_index = options.device_index;
             app_config.enable_validation_layers = options.enable_validation_layers;
             app_config.enable_descriptor_indexing = true;
-            app_config.flip_texcoord_v = options.materialxtest_mode;
 
-            Df_vulkan_app app(transaction, mdl_impexp_api, image_api, target_code, compiled_material,options);
+            Df_vulkan_app app(
+                transaction, mdl_impexp_api, image_api, target_code,
+                compiled_material,options);
             result = app.run(app_config) ? 0 : -1;
         }
 

@@ -4,7 +4,8 @@
   "description": "MaterialX is an open standard for the interchange of rich material and look-development content between applications and renderers.",
   "builtin-baseline": "ef7dbf94b9198bc58f45951adcf1f041fcbc5ea0",
   "dependencies": [
-    { "name": "glslang", "features": ["tools"], "platform": "windows | linux" }
+    { "name": "glslang", "features": ["tools"], "platform": "windows | linux" },
+    { "name": "openimageio", "features": ["tools"], "platform": "windows | linux" }
   ],
   "features": {
     "mdl-compiler": {

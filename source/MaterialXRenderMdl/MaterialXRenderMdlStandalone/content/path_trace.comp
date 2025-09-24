@@ -59,7 +59,6 @@ layout(std140, set = 0, binding = BINDING_RENDER_PARAMS) uniform Render_params
 
     // Render params
     uint uMaxPathLength;
-    uint uMaxSSSPathLength;
     uint uSamplesPerIteration;
     uint uProgressiveIteration;
     uint uFlipTexCoordV;
@@ -761,8 +760,9 @@ void main()
 
     const ivec2 image_coord = ivec2(gl_GlobalInvocationID.xy);
 
-    float blend_weight = float(uSamplesPerIteration) / float(uProgressiveIteration + uSamplesPerIteration);
     vec3 old_beauty = imageLoad(uBeautyBuffer, image_coord).xyz;
+
+    float blend_weight = float(uSamplesPerIteration) / float(uProgressiveIteration + uSamplesPerIteration);
     vec3 new_beauty = mix(old_beauty, contribution, blend_weight);
 
     imageStore(uBeautyBuffer, image_coord, vec4(new_beauty, 0.0));

@@ -326,7 +326,6 @@ private:
 
         // Render params
         uint32_t max_path_length;
-        uint32_t uMaxSSSPathLength;
         uint32_t samples_per_iteration;
         uint32_t progressive_iteration;
         uint32_t flip_texcoord_v;

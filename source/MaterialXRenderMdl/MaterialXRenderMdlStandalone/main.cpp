@@ -1630,28 +1630,6 @@ void print_usage(char const* prog_name)
         << "Usage: " << prog_name << " [options] [<material_name|full_mdle_path>]\n"
         << "Options:\n"
         << "  -h|--help                   print this text and exit\n"
-
-        << "  --mtlx_path <path>          Specify an additional absolute search path location\n"
-           "                              (e.g. '/projects/MaterialX'). This path will be queried when\n"
-           "                              locating standard data libraries, XInclude references, and\n"
-           "                              referenced images. Can occur multiple times.\n"
-
-        << "  --mtlx_library <rel_path>   Specify an additional relative path to a custom data\n"
-           "                              library folder (e.g. 'libraries/custom'). MaterialX files\n"
-           "                              at the root of this folder will be included in all content\n"
-           "                              documents. Can occur multiple times.\n"
-
-        << "  --mtlx_to_mdl <version>     Specify the MDL version to generate.\n"
-           "                              Supported values are \"1.6\", \"1.7\", \"1.8\", \"1.9\", ... and\n"
-           "                              \"latest\". (default: \"latest\")\n"
-
-        << "  -p|--mdl_path <path>        additional MDL search path, can occur multiple times\n"
-
-        << "  --mat <identifier>          Specify the material to render. The are multiple options:\n"
-        << "                              - <MaterialX-filepath>\n"
-        << "                              - <MaterialX-filepath>?name=<element name>\n"
-        << "                              - <MDL qualified material name>\n"
-
         << "  --nogui                     Don't open interactive display\n"
         << "  --res <res_x> <res_y>       Resolution (default: 1024x768)\n"
         << "  --numimg <n>                Swapchain image count (default: 3)\n"
@@ -1661,13 +1639,11 @@ void print_usage(char const* prog_name)
         << "  --max_path_length <num>     Maximum path length (default: 4)\n"
         << "  --max_sss_steps <num>       Maximum number of volume scattering steps in addition to \n"
         << "                              'max_path_length', (default: 256)\n"
-
         << "  -f|--fov <fov>              the camera field of view in degrees (default: 96.0)\n"
         << "  --camera <px> <py> <pz> <fx> <fy> <fz>  Overrides the camera pose defined in the\n"
         << "                                          scene as well as the computed one if the scene\n"
         << "                                          has no camera. Parameters specify position and\n"
         << "                                          focus point.\n"
-
         << "  -l|--light <x> <y> <z>      adds an omni-directional light with the given position\n"
         << "             <r> <g> <b>      and intensity\n"
         << "  --hdr <path>                hdr image file used for the environment map\n"
@@ -1676,15 +1652,30 @@ void print_usage(char const* prog_name)
         << "  --hdr_rotate <angle>        Environment rotation in degree (default: 0)\n"
         << "  --background <r> <g> <b>    Constant background color to replace the environment only \n"
         << "                              if directly visible to the camera. (default: <empty>).\n"
-
         << "  --enable_ro_segment         enable the read-only data segment\n"
         << "  --disable_ssbo              disable use of an ssbo for constants\n"
         << "  --max_const_data <size>     set the maximum size of constants in bytes in the\n"
         << "                              generated code (requires read-only data segment or\n"
         << "                              ssbo, default 1024)\n"
+        << "  -p|--mdl_path <path>        additional MDL search path, can occur multiple times\n"
+        << "  --mtlx_path <path>          Specify an additional absolute search path location\n"
+        << "                              (e.g. '/projects/MaterialX'). This path will be queried\n"
+        << "                              when locating standard data libraries, XInclude\n"
+        << "                              references, and referenced images. Can occur multiple\n"
+        << "                              times.\n"
+        << "  --mtlx_library <rel_path>   Specify an additional relative path to a custom data\n"
+        << "                              library folder (e.g. 'libraries/custom'). MaterialX\n"
+        << "                              files at the root of this folder will be included in\n"
+        << "                              all content documents. Can occur multiple times.\n"
+        << "  --mtlx_to_mdl <version>     Specify the MDL version to generate.\n"
+        << "                              Supported values are \"1.6\" up to \"1.10\" and\n"
+        << "                              \"latest\". (default: \"latest\")\n"
+        << "  --mat <identifier>          Specify the material to render. The are multiple options:\n"
+        << "                              - <MaterialX-filepath>\n"
+        << "                              - <MaterialX-filepath>?name=<element name>\n"
+        << "                              - <MDL qualified material name>\n"
         << "  --vkdebug                   enable the Vulkan validation layers\n"
         << "  --no_shader_opt             disables shader SPIR-V optimization\n"
-
         << "  --materialxtest_mode        setup image and texcoord space to match the test setup\n"
         << "  -o|--output <path>          image file to write result in nogui mode (default: output.exr)\n"
         << "  -g|--generated <path>       outputs the MDL code generated from MaterialX to a file\n"
@@ -1708,36 +1699,6 @@ void parse_command_line(int argc, char* argv[], Options& options)
             if (arg == "--nogui")
                 options.no_window = true;
 
-            else if (arg == "--mtlx_path" && i < argc - 1)
-            {
-                std::string path(argv[++i]);
-                options.mtlx_paths.push_back(mi::examples::io::normalize(path));
-            }
-            else if (arg == "--mtlx_library" && i < argc - 1)
-            {
-                std::string path(argv[++i]);
-                options.mtlx_libraries.push_back(mi::examples::io::normalize(path));
-            }
-            else if (arg == "--mtlx_to_mdl" && i < argc - 1)
-            {
-                std::string version(argv[++i]);
-                if (version != "1.6")
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_6;
-                else if (version != "1.7")
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_7;
-                else if (version != "1.8")
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_8;
-                else if (version != "1.9")
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_9;
-                else if (version != "1.10")
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_10;
-                else
-                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
-            }
-            else if (arg == "--mat" && i < argc - 1)
-            {
-                options.material_name = argv[++i];
-            }
             else if (arg == "--res" && i < argc - 2)
             {
                 options.res_x = std::max(atoi(argv[++i]), 1);
@@ -1794,6 +1755,36 @@ void parse_command_line(int argc, char* argv[], Options& options)
             }
             else if ((arg == "-p" || arg == "--mdl_path") && i < argc - 1)
                 options.mdl_search_paths.push_back(argv[++i]);
+            else if (arg == "--mtlx_path" && i < argc - 1)
+            {
+                std::string path(argv[++i]);
+                options.mtlx_paths.push_back(mi::examples::io::normalize(path));
+            }
+            else if (arg == "--mtlx_library" && i < argc - 1)
+            {
+                std::string path(argv[++i]);
+                options.mtlx_libraries.push_back(mi::examples::io::normalize(path));
+            }
+            else if (arg == "--mtlx_to_mdl" && i < argc - 1)
+            {
+                std::string version(argv[++i]);
+                if (version != "1.6")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_6;
+                else if (version != "1.7")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_7;
+                else if (version != "1.8")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_8;
+                else if (version != "1.9")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_9;
+                else if (version != "1.10")
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_1_10;
+                else
+                    options.mdl_target_version = MaterialX::GenMdlOptions::MdlVersion::MDL_LATEST;
+            }
+            else if (arg == "--mat" && i < argc - 1)
+            {
+                options.material_name = argv[++i];
+            }
             else if (arg == "--enable_ro_segment")
                 options.enable_ro_segment = true;
             else if (arg == "--disable_ssbo")
